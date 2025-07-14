@@ -715,17 +715,17 @@ export default function App() {
 
     return (
       <div style={{ 
-          width: "100%",
-          maxWidth: 700,
+          maxWidth: 900,
           margin: "0 auto",
-          padding: "0 18px",
+          padding: "0 24px",
           display: "flex",
           flexDirection: "column",
-          alignItems: "stretch" 
+          alignItems: "center",
+          width: "100%",
         }}>
 
         {/* Game Info Bar */}
-        <div style={{ marginBottom: 8, fontWeight: 600 }}>
+        <div style={{ paddingTop: 22, marginBottom: 8, fontWeight: 600 }}>
           Trump Suit: <span style={{ color: SUIT_COLORS[trumpSuit], fontWeight: "bold" }}>
             {SUIT_SYMBOLS[trumpSuit]} {trumpSuit.charAt(0).toUpperCase() + trumpSuit.slice(1)}
           </span>
@@ -746,50 +746,74 @@ export default function App() {
           <span style={{ color: "#ea6700" }}>{teamBLevel}</span>
         </div>
         
-        {/* Player status list */}
-        <ul style={{ listStyle: "none", padding: 0, margin: "1.4rem 0 1.2rem 0" }}>
-          {slots.map((player, idx) => (
-            <li key={idx}>
-              <span style={{
-                fontWeight: player === lobbyInfo.username ? "bold" : undefined,
-                fontSize: 18
-              }}>
-                {player || <span style={{ color: "#bbb" }}>Empty</span>}
-              </span>
-              {" "}
-              <span style={{
-                color: idx % 2 === 0 ? "#1976d2" : "#a06d2d",
-                fontWeight: 500,
-                marginLeft: 4
-              }}>
-                [{seatTeam(idx) === "A" ? "Team A" : "Team B"}]
-              </span>
-              {" "}
-              {player &&
-                <span style={{
-                  color: "#ea6700",
-                  fontWeight: 600,
-                  marginLeft: 2
+        {/* Player status list as a real table */}
+        <table
+          style={{
+            width: "100%",
+            maxWidth: 600,
+            margin: "0 auto 1.2rem auto",
+            borderCollapse: "collapse",
+            fontSize: 15,
+            background: "#fff"
+          }}
+        >
+          <thead>
+            <tr style={{ borderBottom: "1px solid #ddd" }}>
+              <th style={{ textAlign: "left", padding: "5px 10px", fontWeight: 700 }}>Player</th>
+              <th style={{ textAlign: "left", padding: "5px 10px", fontWeight: 700 }}>Team</th>
+              <th style={{ textAlign: "left", padding: "5px 10px", fontWeight: 700 }}>Level</th>
+              <th style={{ textAlign: "left", padding: "5px 10px", fontWeight: 700 }}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {slots.map((player, idx) => {
+              const teamLabel = seatTeam(idx) === "A"
+                ? <span style={{ color: "#1976d2" }}>A</span>
+                : <span style={{ color: "#a06d2d" }}>B</span>;
+              const isCurrent = player === lobbyInfo.username;
+              let statusCell = "";
+              if (player) {
+                if (currentPlayer) {
+                  if (passedPlayers.includes(player)) {
+                    statusCell = <span style={{ color: "#ad0000" }}>⏸️ Passed</span>;
+                  } else if (player === currentPlayer) {
+                    statusCell = <span style={{ color: "#189a10" }}>▶️ Playing</span>;
+                  } else {
+                    statusCell = <span style={{ color: "#888" }}>Waiting</span>;
+                  }
+                } else {
+                  statusCell = (
+                    <span style={{ color: readyStates[player] ? "green" : "gray" }}>
+                      {readyStates[player] ? "✔️ Ready" : "⏳ Not Ready"}
+                    </span>
+                  );
+                }
+              }
+              return (
+                <tr key={idx} style={{
+                  background: idx % 2 === 1 ? "#f8fafd" : "#fff",
+                  color: player ? "#222" : "#bbb",
+                  fontWeight: isCurrent ? "bold" : 400,
+                  height: 28
                 }}>
-                  Lvl {levels[player]}
-                </span>
-              }
-              {" "}
-              {player && currentPlayer
-                ? (
-                  passedPlayers.includes(player)
-                    ? <span style={{ color: "#ad0000" }}>⏸️ Passed</span>
-                    : <span style={{ color: "#189a10" }}>▶️ Playing</span>
-                )
-                : player && (
-                  <span style={{ color: readyStates[player] ? "green" : "gray" }}>
-                    {readyStates[player] ? "✔️ Ready" : "⏳ Not Ready"}
-                  </span>
-                )
-              }
-            </li>
-          ))}
-        </ul>
+                  <td style={{ padding: "2px 10px", minWidth: 50 }}>
+                    {player || <span style={{ color: "#bbb" }}>Empty</span>}
+                  </td>
+                  <td style={{ padding: "2px 10px" }}>
+                    {teamLabel}
+                  </td>
+                  <td style={{ padding: "2px 10px" }}>
+                    {player && levels[player]
+                      ? <span style={{ color: "#ea6700" }}>Lvl {levels[player]}</span>
+                      : ""}
+                  </td>
+                  <td style={{ padding: "2px 10px", minWidth: 70 }}>{statusCell}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
 
         {/* Opponents' Hands Display */}
         <div
@@ -1086,22 +1110,25 @@ export default function App() {
               flexDirection: "row",
               justifyContent: "center",
               gap: 14,
-              marginBottom: 32,   // buffer below buttons
+              marginBottom: 32,
               marginTop: 12
             }}
           >
-            <button
-              disabled={selectedCards.length === 0}
-              onClick={playSelectedCards}
-              style={{
-                minWidth: 110,
-                padding: "10px 24px",
-                borderRadius: 6,
-                fontWeight: 500
-              }}
-            >
-              Play Selected
-            </button>
+            {/* Only show Play Selected if End Round is NOT possible */}
+            {!canEndRound && (
+              <button
+                disabled={selectedCards.length === 0}
+                onClick={playSelectedCards}
+                style={{
+                  minWidth: 110,
+                  padding: "10px 24px",
+                  borderRadius: 6,
+                  fontWeight: 500
+                }}
+              >
+                Play Selected
+              </button>
+            )}
             {canEndRound ? (
               <button
                 style={{
@@ -1132,13 +1159,14 @@ export default function App() {
             )}
           </div>
         )}
+
+
+        
         {!yourTurn && !canEndRound && (
           <p style={{ margin: "18px 0 32px 0" }}>
             Waiting for <strong>{currentPlayer}</strong> to play...
           </p>
         )}
-
-        
       </div>
     );
   }
