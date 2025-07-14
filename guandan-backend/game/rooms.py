@@ -8,7 +8,8 @@ rooms = {}
 
 def generate_room_id():
     """Generate room code by picking 3 random words, joined by dashes, lowercase."""
-    return '-'.join(random.choice(WORDS) for _ in range(3)).lower()
+    #return '-'.join(random.choice(WORDS) for _ in range(3)).lower()\
+    return 'test'
 
 def create_room(username, card_back, wild_cards):
     room_id = generate_room_id()
