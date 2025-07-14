@@ -1,66 +1,58 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.env
-.env
-venv/
-env/
-ENV/
-*.sqlite3
-*.db
-*.egg-info/
-dist/
-build/
-*.egg
-pip-wheel-metadata/
-*.manifest
-*.spec
+# ---- Node/React Frontend ----
+guandan-frontend/node_modules/
+guandan-frontend/.env
+guandan-frontend/.env.local
+guandan-frontend/.next/
+guandan-frontend/.vercel/
+guandan-frontend/build/
+guandan-frontend/dist/
+guandan-frontend/.DS_Store
 
-# Node / React
-node_modules/
-build/
-dist/
+# ---- Python Backend ----
+guandan-backend/venv/
+guandan-backend/.env
+guandan-backend/__pycache__/
+guandan-backend/game/__pycache__/
+guandan-backend/*.pyc
+guandan-backend/*.pyo
+guandan-backend/.pytest_cache/
+guandan-backend/.mypy_cache/
+guandan-backend/.DS_Store
+
+# ---- VSCode & IDE ----
+.vscode/
+.idea/
+*.iml
+
+# ---- OS Junk ----
+.DS_Store
+Thumbs.db
+
+# ---- General ----
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-# VSCode
-.vscode/
-
-# MacOS
-.DS_Store
-
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# Logs
-*.log
-
-# Coverage reports
-coverage/
-htmlcov/
-
-# Pytest cache
-.pytest_cache/
-
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-
-# dotenv environment variables file
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# React / Webpack
-*.env
-/.pnp
-.pnp.js
-
-# Misc
 *.swp
-*.swo
+
+# ---- Card Assets (if you want to ignore uploaded zips) ----
+/guandan-frontend/public/cards.zip
+
+# ---- ENV Files ----
+.env
+.env.*
+
+# ---- Misc ----
+*.sublime-workspace
+*.sublime-project
+
+# ---- Coverage Reports ----
+coverage/
+coverage-final.json
+
+# ---- Test output ----
+junit*.xml
+*.test-results.xml
+
+# ---- Local Settings ----
+*.local

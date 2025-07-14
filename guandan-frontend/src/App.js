@@ -3,6 +3,20 @@
 import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 import CreateJoinRoom from "./CreateJoinRoom";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+  arrayMove
+} from '@dnd-kit/sortable';
+import {CSS} from '@dnd-kit/utilities';
 
 // ---- Card mapping helpers ----
 const CARD_RANK_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2', 'JoB', 'JoR'];
@@ -29,11 +43,13 @@ function cardSortKey(card, levelRank) {
   return CARD_RANK_ORDER.indexOf(getCardRank(card));
 }
 function getCardRank(card) {
+  if (!card || typeof card !== "string") return "";
   if (card === "JoB" || card === "JoR") return card;
   if (card.length === 3) return card.slice(0, 2);
   return card[0];
 }
 function getCardSuit(card) {
+  if (!card || typeof card !== "string") return null;
   if (card === "JoB" || card === "JoR") return null;
   const code = card.length === 3 ? card[2] : card[1];
   switch (code?.toUpperCase()) {
@@ -81,6 +97,27 @@ function seatTeam(idx) {
   return idx % 2 === 0 ? "A" : "B";
 }
 
+function SortableCard({ card, idx, ...props }) {
+  const {attributes, listeners, setNodeRef, transform, transition, isDragging} = useSortable({id: card + idx});
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        zIndex: isDragging ? 10 : 1,
+        display: "inline-block",
+        marginLeft: idx === 0 ? 0 : -24,
+      }}
+    >
+      <CardImg card={card} {...props} />
+    </div>
+  );
+}
+
+
 // ================= MAIN APP ===================
 export default function App() {
   // Core game/lobby state
@@ -100,13 +137,18 @@ export default function App() {
   const [levels, setLevels] = useState({});
   const [teams, setTeams] = useState([[], []]);
   const [slots, setSlots] = useState([null, null, null, null]);
-  const [settings, setSettings] = useState({ cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2", "2", "2", "2"] });
+  const [settings, setSettings] = useState({ cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2", "2", "2", "2"], showCardCount: false });
   const [levelRank, setLevelRank] = useState("2");
   const [wildCards, setWildCards] = useState(true); // default is now true!
   const [trumpSuit, setTrumpSuit] = useState("hearts");
   const [startingLevels, setStartingLevels] = useState(["2","2","2","2"]);
   const [hands, setHands] = useState({});
   const [errorMsg, setErrorMsg] = useState("");
+  const [handOrder, setHandOrder] = useState([]);
+  
+  useEffect(() => {
+    setHandOrder(playerHand || []);
+  }, [playerHand]);
 
   // Keep lobbyInfo ref updated
   useEffect(() => { lobbyInfoRef.current = lobbyInfo; }, [lobbyInfo]);
@@ -162,7 +204,12 @@ export default function App() {
     // ---- Deal your hand privately
     s.on("deal_hand", data => {
       if (lobbyInfoRef.current && data.username === lobbyInfoRef.current.username) {
-        setPlayerHand(data.hand);
+        // Sort the new hand in value order (using the current level)
+        const sortedHand = [...data.hand].sort(
+          (a, b) => cardSortKey(a, levelRank) - cardSortKey(b, levelRank)
+        );
+        setPlayerHand(sortedHand);
+        setHandOrder(sortedHand); // Also reset the handOrder for drag-and-drop
       }
     });
 
@@ -268,6 +315,7 @@ export default function App() {
     const { roomId, username } = lobbyInfo;
     if (selectedCards.length === 0) return;
     socket.emit("play_cards", { roomId, username, cards: selectedCards });
+    setHandOrder(handOrder.filter(card => !selectedCards.includes(card)));
     setSelectedCards([]);
   };
   const passTurn = () => {
@@ -320,6 +368,31 @@ export default function App() {
     const { roomId, username } = lobbyInfo;
     socket.emit("move_seat", { roomId, username, slotIdx: idx });
   };
+
+  const handleChangeCardBack = (color) => {
+    if (!socket || !lobbyInfo) return;
+    const newSettings = { ...settings, cardBack: color };
+    setSettings(newSettings);
+    socket.emit("update_room_settings", {
+      roomId: lobbyInfo.roomId,
+      settings: newSettings
+    });
+  };
+
+  const handleChangeShowCardCount = (enabled) => {
+    if (!socket || !lobbyInfo) return;
+    const newSettings = { ...settings, showCardCount: enabled };
+    setSettings(newSettings);
+    socket.emit("update_room_settings", {
+      roomId: lobbyInfo.roomId,
+      settings: newSettings
+    });
+  };
+
+  // ---- PLAYER HAND CARD DRAGGING ----
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
+  );
 
   // --- RENDER ERROR BANNER ---
   function renderErrorBanner() {
@@ -456,6 +529,8 @@ export default function App() {
     const isCreator = slots[0] === username;
     const allReady = slots.filter(Boolean).every(player => readyStates[player]);
     return (
+
+      /* Card Back & Show Card Counter */
       <div style={{ textAlign: "center", marginTop: "2.2rem" }}>
         {renderErrorBanner()}
         <h1>Room {roomId}</h1>
@@ -487,6 +562,45 @@ export default function App() {
             )}
           </span>
         </div>
+
+        {/* Card Back & Show Card Counter */}
+        <div style={{ marginTop: 14, marginBottom: 10 }}>
+          <span style={{ marginRight: 30 }}>
+            <strong>Card Back:</strong>{" "}
+            {isCreator ? (
+              <select
+                value={settings.cardBack}
+                onChange={e => handleChangeCardBack(e.target.value)}
+                style={{ fontSize: 18, marginLeft: 4 }}
+              >
+                <option value="red">Red</option>
+                <option value="black">Black</option>
+              </select>
+            ) : (
+              <span style={{ color: "#ba1e1e", fontWeight: "bold" }}>
+                {settings.cardBack.charAt(0).toUpperCase() + settings.cardBack.slice(1)}
+              </span>
+            )}
+          </span>
+          <span>
+            <strong>Show Opponent Card Counter:</strong>{" "}
+            {isCreator ? (
+              <input
+                type="checkbox"
+                checked={!!settings.showCardCount}
+                onChange={e => handleChangeShowCardCount(e.target.checked)}
+                style={{ transform: "scale(1.4)", marginLeft: 7, marginRight: 2 }}
+              />
+            ) : (
+              <span style={{ color: "#1c2c8d", fontWeight: "bold", marginLeft: 5 }}>
+                {settings.showCardCount ? "On" : "Off"}
+              </span>
+            )}
+          </span>
+        </div>
+
+
+
         <div style={{ display: "flex", justifyContent: "center", gap: "6rem", margin: "1.6rem 0" }}>
           <TeamColumn team="A" slotIndices={[0,2]} slots={slots} yourName={username}
             isCreator={isCreator} startingLevels={startingLevels}
@@ -532,9 +646,19 @@ export default function App() {
       : "-";
 
     console.log("hands object:", hands);
+    console.log("playerHand:", playerHand);
+    console.log("handOrder:", handOrder);
 
     return (
-      <div style={{ textAlign: "center", marginTop: "2.2rem" }}>
+      <div style={{ 
+          width: "100%",
+          maxWidth: 700,
+          margin: "0 auto",
+          padding: "0 18px",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "stretch" 
+        }}>
         {/* Game Info Bar */}
         <div style={{ marginBottom: 8, fontWeight: 600 }}>
           Trump Suit: <span style={{ color: SUIT_COLORS[trumpSuit], fontWeight: "bold" }}>
@@ -555,59 +679,7 @@ export default function App() {
           <strong>Team B Level:</strong>{" "}
           <span style={{ color: "#ea6700" }}>{teamBLevel}</span>
         </div>
-        {/* All Hands: Show only opponents (face down), NOT your own hand here! */}
-        <div style={{
-          display: "flex",
-          justifyContent: "center",
-          gap: "2.5rem",
-          marginBottom: "2rem"
-        }}>
-          {slots.map((player, idx) => {
-            if (!player) {
-              return (
-                <div key={idx} style={{ minWidth: 110, opacity: 0.5 }}>
-                  <div style={{ height: 60 }}></div>
-                  <div style={{ fontSize: 16, color: "#bbb" }}>Empty</div>
-                </div>
-              );
-            }
-            if (player === lobbyInfo.username) {
-              return <div key={player} style={{ minWidth: 110 }}></div>;
-            }
-            const hand = hands && hands[player] ? hands[player] : [];
-            return (
-              <div key={player} style={{ minWidth: 110 }}>
-                <div style={{ marginBottom: 4 }}>{player}</div>
-                <div style={{
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "center",
-                  height: 60
-                }}>
-                  {Array.from({ length: hand.length }).map((_, i) => (
-                    <img
-                      key={i}
-                      src={process.env.PUBLIC_URL + `/cards/back_${settings.cardBack[0]}.svg`}
-                      alt="Back"
-                      style={{
-                        width: 36,
-                        height: 52,
-                        marginLeft: i === 0 ? 0 : -14,
-                        borderRadius: 6,
-                        border: "1px solid #aaa",
-                        background: "#eee"
-                      }}
-                    />
-                  ))}
-                </div>
-                <div style={{ fontSize: 12, color: "#555" }}>
-                  Cards: {hand.length}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
+        
         {/* Player status list */}
         <ul style={{ listStyle: "none", padding: 0, margin: "1.4rem 0 1.2rem 0" }}>
           {slots.map((player, idx) => (
@@ -652,104 +724,358 @@ export default function App() {
             </li>
           ))}
         </ul>
+
+        {/* Opponents' Hands Display */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-end",
+            width: "100%",
+            margin: "0 auto 24px auto",
+            padding: "0 8px",
+            boxSizing: "border-box",
+            gap: "12px",
+          }}
+        >
+          {slots.map((player, idx) => {
+            if (!player || player === lobbyInfo.username) return null;
+
+            const hand = hands && hands[player] ? hands[player] : [];
+            const maxCardWidth = 36;
+            const cardCount = hand.length;
+
+            // Container is always 100%, but inner stack is absolute-positioned
+            const boxWidth = 120; // px - can adjust this to fit your design, try 100-160px
+            const minOverlap = 7; // minimal visible part
+            // overlap so all cards fit in boxWidth
+            const overlap = cardCount > 1
+              ? Math.max(
+                  maxCardWidth - ((boxWidth - maxCardWidth) / (cardCount - 1)),
+                  minOverlap
+                )
+              : 0;
+
+            return (
+              <div
+                key={player}
+                style={{
+                  flex: "1 1 0",
+                  minWidth: 90,
+                  maxWidth: 220,
+                  padding: "14px 6px 10px 6px",
+                  border: "1.5px solid #eee",
+                  borderRadius: 10,
+                  background: "#f9fafd",
+                  boxShadow: "0 2px 8px #0001",
+                  textAlign: "center",
+                  margin: "0 2px",
+                  boxSizing: "border-box",
+                }}
+              >
+                <div style={{
+                  fontWeight: 500,
+                  color: idx % 2 === 0 ? "#1976d2" : "#a06d2d",
+                  fontSize: 17,
+                  marginBottom: 4,
+                }}>
+                  {player}
+                  <span style={{ color: "#aaa", fontWeight: 400, fontSize: 13, marginLeft: 2 }}>
+                    [{seatTeam(idx) === "A" ? "A" : "B"}]
+                  </span>
+                </div>
+                {/* Overlap Stack: absolutely position cards inside container */}
+                <div
+                  style={{
+                    width: boxWidth,
+                    height: 52,
+                    margin: "0 auto 8px auto",
+                    position: "relative",
+                    background: "#fafbfc",
+                    borderRadius: 6,
+                    boxSizing: "border-box",
+                  }}
+                >
+                  {Array.from({ length: cardCount }).map((_, i) => (
+                    <img
+                      key={i}
+                      src={process.env.PUBLIC_URL + `/cards/back_${settings.cardBack?.[0] || "r"}.svg`}
+                      alt="Back"
+                      style={{
+                        width: maxCardWidth,
+                        height: 52,
+                        position: "absolute",
+                        left: i * (boxWidth - maxCardWidth) / Math.max(cardCount - 1, 1),
+                        top: 0,
+                        borderRadius: 5,
+                        border: "1px solid #aaa",
+                        boxShadow: "0 1px 4px #0001",
+                        background: "#eee",
+                        zIndex: i,
+                        transition: "left 0.16s cubic-bezier(.8,.3,.3,1)",
+                        pointerEvents: "none"
+                      }}
+                    />
+                  ))}
+                </div>
+                {/* Optional card count, as per setting */}
+                {settings.showCardCount && (
+                  <div style={{
+                    fontSize: 13,
+                    color: "#657",
+                    fontWeight: 500,
+                    letterSpacing: "0.5px",
+                    marginTop: 2,
+                    background: "#fff6",
+                    borderRadius: 6,
+                    padding: "2px 7px",
+                    display: "inline-block"
+                  }}>
+                    Cards: {cardCount}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
         <h3>Current turn: <span style={{ color: yourTurn ? "#0048ab" : undefined }}>{currentPlayer}</span></h3>
         {/* Last play area */}
-        <div style={{ marginBottom: 10 }}>
-          <strong>Last play:</strong>{" "}
-          {currentPlay === null
-            ? <span style={{ color: "#999" }}>None yet</span>
-            : (
-              currentPlay.cards.length > 0
-                ? (
-                    <>
-                      {currentPlay.cards.map(card =>
-                        <CardImg
-                          key={card}
-                          card={card}
-                          trumpSuit={trumpSuit}
-                          levelRank={levelRank}
-                          wildCards={wildCards}
-                          highlightWild
-                          highlightTrump
-                          style={{ width: 40, height: 56, verticalAlign: "middle", marginRight: 3 }}
-                        />
-                      )}
-                      {lastPlayType &&
-                        <span style={{ marginLeft: 10, color: "#317cff", fontWeight: "bold" }}>
-                          {handTypeLabelString(lastPlayType)}
-                        </span>
-                      }
-                    </>
-                  )
-                : <span>Pass</span>
-            )
-          }
-          {currentPlay && currentPlay.player ? ` by ${currentPlay.player}` : ""}
+        <div
+          style={{
+            margin: "0 auto 48px auto",
+            width: "100%",
+            maxWidth: "900px",
+            minWidth: 240,
+            transition: "max-width 0.2s",
+          }}
+        >
+          <div
+            style={{
+              background: "#f6f8fa",
+              borderRadius: 15,
+              border: "1.5px solid #e2e7ef",
+              minHeight: 120,
+              minWidth: 240,
+              width: "100%",
+              padding: "16px 2vw 12px 2vw",
+              boxSizing: "border-box",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              boxShadow: "0 2px 20px #e0e3ed60",
+            }}
+          >
+            <div style={{
+              fontWeight: 700,
+              fontSize: "1.23rem",
+              marginBottom: 10,
+              letterSpacing: "0.04em"
+            }}>
+              Last play:
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                minHeight: "6vw",
+                width: "100%",
+                margin: "0 auto"
+              }}
+            >
+              {currentPlay === null ? (
+                <span style={{ color: "#999", fontSize: "1.25em" }}>None yet</span>
+              ) : currentPlay.cards.length > 0 ? (
+                currentPlay.cards.map((card, i) => (
+                  <CardImg
+                    key={card + i}
+                    card={card}
+                    trumpSuit={trumpSuit}
+                    levelRank={levelRank}
+                    wildCards={wildCards}
+                    highlightWild
+                    highlightTrump
+                    style={{
+                      width: "min(max(7vw,50px),92px)",   // Scales 50–92px based on vw
+                      height: "min(max(9vw,72px),130px)", // Scales 72–130px based on vw
+                      marginRight: 8,
+                      transition: "width 0.15s, height 0.15s"
+                    }}
+                  />
+                ))
+              ) : (
+                <span style={{ fontSize: 23, color: "#c62a41" }}>Pass</span>
+              )}
+            </div>
+            <div style={{
+              marginTop: 9,
+              fontSize: "1.08rem",
+              color: "#384060",
+              minHeight: 24,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center"
+            }}>
+              {currentPlay && currentPlay.cards.length > 0 && lastPlayType && (
+                <span style={{
+                  color: "#317cff",
+                  fontWeight: "bold",
+                  marginRight: 8
+                }}>
+                  {handTypeLabelString(lastPlayType)}
+                </span>
+              )}
+              {currentPlay && currentPlay.player && (
+                <span style={{
+                  color: "#444",
+                  fontWeight: 400,
+                  marginLeft: 3
+                }}>
+                  by {currentPlay.player}
+                </span>
+              )}
+            </div>
+          </div>
         </div>
-        {/* === Your hand: full sized, overlapped, selectable === */}
+
+        {/* === Your hand: single-row, overlapped, horizontally scrollable, selectable === */}
         <h3>Your hand:</h3>
-        <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", marginBottom: 10 }}>
-          {[...playerHand]
-            .sort((a, b) => cardSortKey(a, levelRank) - cardSortKey(b, levelRank))
-            .map((card, idx) => {
-              const isSelected = selectedCards.includes(card);
-              return (
-                <CardImg
-                  key={card + idx}
-                  card={card}
-                  trumpSuit={trumpSuit}
-                  levelRank={levelRank}
-                  wildCards={wildCards}
-                  highlightWild
-                  highlightTrump
-                  onClick={() => {
-                    if (!isSelected) {
-                      setSelectedCards([...selectedCards, card]);
-                    } else {
-                      setSelectedCards(selectedCards.filter(c => c !== card));
-                    }
-                  }}
-                  style={{
-                    width: 50,
-                    height: 70,
-                    marginLeft: idx === 0 ? 0 : -24, // Overlap for your hand
-                    border: isSelected ? "3px solid #005fff" : "1px solid #222",
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    userSelect: "none",
-                    boxShadow: isSelected ? "0 0 8px #005fff88" : undefined,
-                    background: "white"
-                  }}
-                />
-              );
-            })}
-        </div>
+
+        {/* === DRAG & DROP PLAYER HAND === */}
+
+        <DndContext
+          sensors={sensors} // <-- use the sensors variable created at top-level, never in JSX!
+          collisionDetection={closestCenter}
+          // When a card is dropped, update the hand order state
+          onDragEnd={({ active, over }) => {
+            if (active.id !== over?.id) {
+              // Find the indexes of the dragged card and the card it was dropped on
+              const oldIdx = handOrder.findIndex((c, i) => (c + i) === active.id);
+              const newIdx = handOrder.findIndex((c, i) => (c + i) === over.id);
+              // Use dnd-kit util to move the card in the array
+              setHandOrder(arrayMove(handOrder, oldIdx, newIdx));
+            }
+          }}
+        >
+          {/* This context enables cards to be sortable horizontally */}
+          <SortableContext
+            items={handOrder.map((c, i) => c + i)} // Every card has a unique ID (card+idx)
+            strategy={horizontalListSortingStrategy}
+          >
+            {/* The visible row of cards */}
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
+                overflowX: "auto",
+                overflowY: "hidden",
+                whiteSpace: "nowrap",
+                justifyContent: "center",
+                paddingBottom: 16,
+                minHeight: 80,
+                margin: "0 auto",
+                maxWidth: "100vw"
+              }}
+            >
+              {handOrder.map((card, idx) => {
+                const isSelected = selectedCards.includes(card);
+                return (
+                  <SortableCard
+                    key={card + idx}
+                    card={card}
+                    idx={idx}
+                    trumpSuit={trumpSuit}
+                    levelRank={levelRank}
+                    wildCards={wildCards}
+                    highlightWild
+                    highlightTrump
+                    onClick={() => {
+                      if (!isSelected) {
+                        setSelectedCards([...selectedCards, card]);
+                      } else {
+                        setSelectedCards(selectedCards.filter(c => c !== card));
+                      }
+                    }}
+                    style={{
+                      width: 50,
+                      height: 70,
+                      border: isSelected ? "3px solid #005fff" : "1px solid #222",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                      userSelect: "none",
+                      boxShadow: isSelected ? "0 0 8px #005fff88" : undefined,
+                      background: "white"
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </SortableContext>
+        </DndContext>
+
         {/* Play/pass/end round controls */}
         {yourTurn && (
-          <>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "row",
+              justifyContent: "center",
+              gap: 14,
+              marginBottom: 32,   // buffer below buttons
+              marginTop: 12
+            }}
+          >
             <button
               disabled={selectedCards.length === 0}
               onClick={playSelectedCards}
-              style={{ marginRight: 10 }}
+              style={{
+                minWidth: 110,
+                padding: "10px 24px",
+                borderRadius: 6,
+                fontWeight: 500
+              }}
             >
               Play Selected
             </button>
-            {canEndRound
-              ? (
-                <button
-                  style={{ background: "#28a745", color: "#fff", padding: "10px 24px", fontSize: "1rem", borderRadius: 6 }}
-                  onClick={endRound}
-                >
-                  End Round
-                </button>
-              )
-              : (
-                <button onClick={passTurn}>Pass</button>
-              )
-            }
-          </>
+            {canEndRound ? (
+              <button
+                style={{
+                  background: "#28a745",
+                  color: "#fff",
+                  minWidth: 110,
+                  padding: "10px 24px",
+                  fontSize: "1rem",
+                  borderRadius: 6,
+                  fontWeight: 500
+                }}
+                onClick={endRound}
+              >
+                End Round
+              </button>
+            ) : (
+              <button
+                onClick={passTurn}
+                style={{
+                  minWidth: 80,
+                  padding: "10px 24px",
+                  borderRadius: 6,
+                  fontWeight: 500
+                }}
+              >
+                Pass
+              </button>
+            )}
+          </div>
         )}
-        {!yourTurn && !canEndRound && <p>Waiting for <strong>{currentPlayer}</strong> to play...</p>}
+        {!yourTurn && !canEndRound && (
+          <p style={{ margin: "18px 0 32px 0" }}>
+            Waiting for <strong>{currentPlayer}</strong> to play...
+          </p>
+        )}
+
+        
       </div>
     );
   }
@@ -839,6 +1165,7 @@ function LobbySeat({ idx, player, yourName, isCreator, startingLevel, onMove, on
           : <span style={{ visibility: "hidden" }}>(You)</span>
         }
       </div>
+
       {!player && yourName &&
         <button style={{ marginTop: 4 }} onClick={() => onMove(idx)}>
           Sit Here
@@ -850,6 +1177,7 @@ function LobbySeat({ idx, player, yourName, isCreator, startingLevel, onMove, on
 
 // --- CardImg: Renders a single card face or (optionally) highlights trump/wild ---
 function CardImg({ card, trumpSuit, levelRank, wildCards, onClick, highlightWild, highlightTrump, style }) {
+  if (!card || typeof card !== "string") return null;
   const isJoker = card === "JoB" || card === "JoR";
   const suit = getCardSuit(card);
   const rank = getCardRank(card);

@@ -173,7 +173,7 @@ def handle_update_room_settings(data):
     new_settings = data.get('settings', {})
     if room_id not in rooms:
         return
-    for k in ["wildCards", "cardBack", "trumpSuit", "startingLevels"]:
+    for k in ["wildCards", "cardBack", "trumpSuit", "startingLevels", "showCardCount"]:
         if k in new_settings:
             rooms[room_id]["settings"][k] = new_settings[k]
     broadcast_room_update(room_id)

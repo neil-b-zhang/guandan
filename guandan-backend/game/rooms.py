@@ -25,7 +25,8 @@ def create_room(username, card_back, wild_cards):
             "cardBack": card_back,
             "wildCards": wild_cards,
             "trumpSuit": "hearts",
-            "startingLevels": ["2", "2", "2", "2"]
+            "startingLevels": ["2", "2", "2", "2"],
+            "showCardCount": False
         },
         "slots": slots,  # always 4 slots
         "ready": {username: False},
