@@ -12,6 +12,7 @@ from game.rooms import (
     rooms
 )
 from game.deck import create_deck, shuffle_deck, deal_cards
+from game.hands import hand_type, beats  # NEW
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
@@ -40,6 +41,43 @@ def broadcast_room_update(room_id):
             "readyStates": ready_states
         }, room=room_id)
         print(f"Broadcasted room_update to room {room_id}: players={players}, ready={ready_states}")
+
+def start_new_game_round(room_id):
+    players = get_room_players(room_id)
+    deck = create_deck()
+    shuffle_deck(deck)
+    hands = deal_cards(deck, len(players))
+    for player, hand in zip(players, hands):
+        set_player_hand(room_id, player, hand)
+    rooms[room_id]['game'] = {
+        'players': players,
+        'turn_index': 0,
+        'current_play': None,
+        'round_active': True,
+        'passes': set(),
+        'current_winner': None,
+        'finish_order': []
+    }
+    emit('game_started', {"roomId": room_id, "current_player": players[0]}, room=room_id)
+    broadcast_room_update(room_id)
+    for player in players:
+        hand = get_player_hand(room_id, player)
+        emit('deal_hand', {"hand": hand, "username": player}, room=room_id)
+
+def start_new_trick(room_id, winner_username):
+    game = rooms[room_id]['game']
+    game['turn_index'] = game['players'].index(winner_username)
+    game['current_play'] = None
+    game['passes'] = set()
+    game['current_winner'] = winner_username
+    emit('game_update', {
+        'current_play': None,
+        'last_play_type': None,
+        'hands': rooms[room_id]['hands'],
+        'current_player': winner_username,
+        'can_end_round': False,
+        'passed_players': []
+    }, room=room_id)
 
 @socketio.on('create_room')
 def handle_create_room(data):
@@ -97,27 +135,6 @@ def handle_set_ready(data):
     print(f"{username} set ready={ready} in room {room_id}")
     broadcast_room_update(room_id)
 
-def start_new_round(room_id):
-    players = get_room_players(room_id)
-    deck = create_deck()
-    shuffle_deck(deck)
-    hands = deal_cards(deck, len(players))
-    for player, hand in zip(players, hands):
-        set_player_hand(room_id, player, hand)
-    rooms[room_id]['game'] = {
-        'players': players,
-        'turn_index': 0,
-        'current_play': None,
-        'round_active': True,
-        'passes': set(),
-        'current_winner': None
-    }
-    emit('game_started', {"roomId": room_id, "current_player": players[0]}, room=room_id)
-    broadcast_room_update(room_id)
-    for player in players:
-        hand = get_player_hand(room_id, player)
-        emit('deal_hand', {"hand": hand, "username": player}, room=room_id)
-
 @socketio.on('start_game')
 def handle_start_game(data):
     room_id = data.get('roomId')
@@ -126,7 +143,7 @@ def handle_start_game(data):
         emit('error_msg', "Not all players are ready!", room=request.sid)
         return
     print(f"Game started in room {room_id} by {username}")
-    start_new_round(room_id)
+    start_new_game_round(room_id)
 
 @socketio.on('play_cards')
 def handle_play_cards(data):
@@ -135,7 +152,7 @@ def handle_play_cards(data):
     cards = data.get('cards', [])
 
     game = rooms[room_id].get('game')
-    if not game or not game['round_active']:
+    if not game:
         emit('error_msg', "Game not active.", room=request.sid)
         return
 
@@ -146,83 +163,42 @@ def handle_play_cards(data):
 
     player_hand = rooms[room_id]['hands'][username]
 
-    # 1. Check player owns all cards played
-    if not all(card in player_hand for card in cards):
-        emit('error_msg', "You do not have all those cards.", room=request.sid)
+    # --- HAND VALIDATION (NEW) ---
+    this_type = hand_type(cards)
+    if not this_type:
+        emit('error_msg', "Invalid hand type! Allowed: Single, Pair, Triple, Full House, Straight (5), Tube (3 consecutive pairs), Plate (2 consecutive triples), Bomb, Joker Bomb.", room=request.sid)
         return
 
-    # 2. Must play at least one card
-    if len(cards) == 0:
-        emit('error_msg', "You must select cards to play or use Pass.", room=request.sid)
-        return
-
-    # 3. All cards must be the same rank (ignoring wilds/jokers for now)
-    ranks = [card[:-1] if not card.startswith("Jo") else card for card in cards]
-    if len(set(ranks)) != 1:
-        emit('error_msg', "All cards played must be the same rank.", room=request.sid)
-        return
-
-    # --- Bomb/Joker Bomb Helper Functions ---
-    def is_bomb(cards):
-        jokers = set(['JoB', 'JoR'])
-        if len(cards) == 2 and set(cards) <= jokers:
-            return 'joker_bomb'
-        ranks_for_bomb = [card[:-1] if not card.startswith("Jo") else card for card in cards if card not in jokers]
-        if len(cards) >= 4 and len(set(ranks_for_bomb)) == 1:
-            return 'bomb'
-        return None
-
-    # Must beat previous play
     last_play = game['current_play']
-    this_bomb = is_bomb(cards)
-    rank_order = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2', 'JoB', 'JoR']
-    def rank_index(r):
-        if r in ['JoB', 'JoR']:
-            return rank_order.index(r)
-        return rank_order.index(r.upper())
-
+    # Must beat previous play if there was one
     if last_play and last_play['cards']:
-        last_cards = last_play['cards']
-        last_bomb = is_bomb(last_cards)
-        last_ranks = [c[:-1] if not c.startswith("Jo") else c for c in last_cards]
-        last_count = len(last_cards)
-        last_rank = last_ranks[0] if last_ranks else None
-
-        if last_bomb:
-            if this_bomb == 'joker_bomb' and last_bomb != 'joker_bomb':
-                pass
-            elif this_bomb == last_bomb and len(cards) == len(last_cards):
-                played_rank = ranks[0]
-                if rank_index(played_rank) <= rank_index(last_rank):
-                    emit('error_msg', "Your bomb is not strong enough to beat the last bomb.", room=request.sid)
-                    return
-            else:
-                emit('error_msg', "You must play a higher bomb to beat the last bomb.", room=request.sid)
-                return
-        elif this_bomb:
-            pass
-        else:
-            if len(cards) != last_count:
-                emit('error_msg', f"You must play {last_count} cards to beat the previous play.", room=request.sid)
-                return
-            played_rank = ranks[0]
-            if rank_index(played_rank) <= rank_index(last_rank):
-                emit('error_msg', "Your play must be a higher rank than the last play.", room=request.sid)
-                return
+        # Use beats() from hands.py
+        if not beats(last_play, {'player': username, 'cards': cards}):
+            emit('error_msg', "Your play must beat the previous hand (matching type/length and higher rank, or a Bomb/Joker Bomb).", room=request.sid)
+            return
 
     # Remove played cards from hand
     for card in cards:
         player_hand.remove(card)
 
-    # Check for round end (player finishes hand)
+    # Check for trick/game end (player finishes hand)
     if len(player_hand) == 0:
-        game['round_active'] = False
-        emit('round_end', {
-            'winner': username,
-            'hands': rooms[room_id]['hands']
-        }, room=room_id)
-        print(f"Round ended! {username} wins.")
-        return
+        game['finish_order'].append(username)
+        remaining_players = [p for p in game['players'] if len(rooms[room_id]['hands'][p]) > 0]
+        if len(remaining_players) == 1:
+            # Game over
+            game['finish_order'].append(remaining_players[0])
+            emit('game_over', {
+                'finish_order': game['finish_order'],
+                'hands': rooms[room_id]['hands']
+            }, room=room_id)
+            print(f"Game over! Finish order: {game['finish_order']}")
+            del rooms[room_id]['game']
+            return
+        else:
+            print(f"Trick ended! {username} wins trick and starts next.")
+            start_new_trick(room_id, username)
+            return
 
     # Reset passes; this is a new winning play
     game['passes'] = set()
@@ -230,13 +206,19 @@ def handle_play_cards(data):
 
     # Update play and advance turn
     game['current_play'] = {'player': username, 'cards': cards}
+
+    # --- NEW: Add hand type to last play ---
+    play_type_label = hand_type(cards)[0] if hand_type(cards) else None
+
     game['turn_index'] = (game['turn_index'] + 1) % len(game['players'])
 
     emit('game_update', {
         'current_play': game['current_play'],
+        'last_play_type': play_type_label,
         'hands': rooms[room_id]['hands'],
         'current_player': game['players'][game['turn_index']],
-        'can_end_round': False
+        'can_end_round': False,
+        'passed_players': list(game.get('passes', set()))
     }, room=room_id)
 
 @socketio.on('pass_turn')
@@ -245,7 +227,7 @@ def handle_pass_turn(data):
     username = data.get('username')
 
     game = rooms[room_id].get('game')
-    if not game or not game['round_active']:
+    if not game:
         emit('error_msg', "Game not active.", room=request.sid)
         return
 
@@ -264,9 +246,11 @@ def handle_pass_turn(data):
         if len(non_passed) == 1 and game['current_winner'] in non_passed:
             emit('game_update', {
                 'current_play': game['current_play'],
+                'last_play_type': hand_type(game['current_play']['cards'])[0] if game['current_play'] else None,
                 'hands': rooms[room_id]['hands'],
                 'current_player': game['current_winner'],
-                'can_end_round': True
+                'can_end_round': True,
+                'passed_players': list(game.get('passes', set()))
             }, room=room_id)
             return
 
@@ -275,9 +259,11 @@ def handle_pass_turn(data):
 
     emit('game_update', {
         'current_play': game['current_play'],
+        'last_play_type': hand_type(game['current_play']['cards'])[0] if game['current_play'] else None,
         'hands': rooms[room_id]['hands'],
         'current_player': game['players'][game['turn_index']],
-        'can_end_round': False
+        'can_end_round': False,
+        'passed_players': list(game.get('passes', set()))
     }, room=room_id)
 
 @socketio.on('end_round')
@@ -286,15 +272,11 @@ def handle_end_round(data):
     username = data.get('username')
     game = rooms[room_id].get('game')
     # Only the current_winner can end the round
-    if not game or not game['round_active'] or username != game.get('current_winner'):
+    if not game or username != game.get('current_winner'):
         emit('error_msg', "You can't end the round.", room=request.sid)
         return
-    game['round_active'] = False
-    emit('round_end', {
-        'winner': username,
-        'hands': rooms[room_id]['hands']
-    }, room=room_id)
-    print(f"Round ended by winner {username}.")
+    print(f"Trick ended by winner {username}; starts next.")
+    start_new_trick(room_id, username)
 
 if __name__ == "__main__":
     print("Starting Guandan backend with async_mode =", socketio.async_mode)

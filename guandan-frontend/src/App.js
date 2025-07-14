@@ -3,14 +3,27 @@ import { io } from "socket.io-client";
 import CreateJoinRoom from "./CreateJoinRoom";
 
 const BACKEND_URL = "http://localhost:5000";
-
-// Card order: 3 < 4 < ... < K < A < 2 < JoB < JoR
 const CARD_RANK_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2', 'JoB', 'JoR'];
 
 function cardSortKey(card) {
   if (card === "JoB" || card === "JoR") return CARD_RANK_ORDER.indexOf(card);
   const rank = card.startsWith("Jo") ? card : card.slice(0, -1);
   return CARD_RANK_ORDER.indexOf(rank.toUpperCase());
+}
+
+function handTypeLabelString(type) {
+  switch (type) {
+    case 'single': return "Single";
+    case 'pair': return "Pair";
+    case 'triple': return "Triple";
+    case 'full_house': return "Full House";
+    case 'straight': return "Straight";
+    case 'tube': return "Tube (3 Consecutive Pairs)";
+    case 'plate': return "Plate (2 Consecutive Triples)";
+    case 'bomb': return "Bomb";
+    case 'joker_bomb': return "Joker Bomb";
+    default: return type;
+  }
 }
 
 function App() {
@@ -20,15 +33,15 @@ function App() {
   const lobbyInfoRef = useRef(null);
   const [socket, setSocket] = useState(null);
   const [playerHand, setPlayerHand] = useState([]);
-
-  // Gameplay state
   const [currentPlayer, setCurrentPlayer] = useState(null);
   const [currentPlay, setCurrentPlay] = useState(null);
+  const [lastPlayType, setLastPlayType] = useState(null);
   const [selectedCards, setSelectedCards] = useState([]);
+  const [canEndRound, setCanEndRound] = useState(false);
+  const [passedPlayers, setPassedPlayers] = useState([]);
+  const [gameOverInfo, setGameOverInfo] = useState(null);
 
-  useEffect(() => {
-    lobbyInfoRef.current = lobbyInfo;
-  }, [lobbyInfo]);
+  useEffect(() => { lobbyInfoRef.current = lobbyInfo; }, [lobbyInfo]);
 
   useEffect(() => {
     const s = io(BACKEND_URL, { transports: ["polling"] });
@@ -42,8 +55,12 @@ function App() {
       setInRoom(true);
       setCurrentPlayer(null);
       setCurrentPlay(null);
+      setLastPlayType(null);
       setSelectedCards([]);
       setPlayerHand([]);
+      setCanEndRound(false);
+      setPassedPlayers([]);
+      setGameOverInfo(null);
     });
 
     s.on("room_update", data => {
@@ -63,12 +80,19 @@ function App() {
     s.on("game_started", data => {
       setCurrentPlayer(data.current_player);
       setCurrentPlay(null);
+      setLastPlayType(null);
       setSelectedCards([]);
+      setCanEndRound(false);
+      setPassedPlayers([]);
+      setGameOverInfo(null);
     });
 
     s.on("game_update", data => {
       setCurrentPlay(data.current_play);
       setCurrentPlayer(data.current_player);
+      setCanEndRound(data.can_end_round || false);
+      setPassedPlayers(data.passed_players || []);
+      setLastPlayType(data.last_play_type || null);
       if (lobbyInfoRef.current) {
         const username = lobbyInfoRef.current.username;
         if (data.hands && data.hands[username]) {
@@ -77,38 +101,34 @@ function App() {
       }
     });
 
-    s.on("error_msg", msg => {
-      alert(msg);
+    s.on("game_over", data => {
+      setGameOverInfo(data);
+      setCurrentPlayer(null);
+      setCurrentPlay(null);
+      setLastPlayType(null);
+      setCanEndRound(false);
+      setPassedPlayers([]);
     });
 
-    return () => {
-      s.disconnect();
-    };
-    // Only run once on mount
+    s.on("error_msg", msg => { alert(msg); });
+
+    return () => { s.disconnect(); };
     // eslint-disable-next-line
   }, []);
 
   const handleCreateRoom = ({ username, cardBack, wildCards }) => {
-    if (socket) {
-      socket.emit("create_room", { username, cardBack, wildCards });
-    }
+    if (socket) socket.emit("create_room", { username, cardBack, wildCards });
   };
 
   const handleJoinRoom = ({ username, roomId }) => {
-    if (socket) {
-      socket.emit("join_room", { username, roomId });
-    }
+    if (socket) socket.emit("join_room", { username, roomId });
   };
 
   const toggleReady = () => {
     if (!socket || !lobbyInfo) return;
     const { roomId, username, readyStates } = lobbyInfo;
     const currentlyReady = readyStates ? readyStates[username] : false;
-    socket.emit("set_ready", {
-      roomId,
-      username,
-      ready: !currentlyReady
-    });
+    socket.emit("set_ready", { roomId, username, ready: !currentlyReady });
   };
 
   const startGame = () => {
@@ -132,13 +152,75 @@ function App() {
     setSelectedCards([]);
   };
 
-  // Lobby and gameplay UI
+  const endRound = () => {
+    if (!socket || !lobbyInfo) return;
+    const { roomId, username } = lobbyInfo;
+    socket.emit("end_round", { roomId, username });
+  };
+
   if (inRoom && lobbyInfo) {
     const { roomId, username, players, settings, readyStates = {} } = lobbyInfo;
     const isCreator = players[0] === username;
     const allReady = players.every(player => readyStates[player]);
     const yourTurn = currentPlayer === username;
 
+    // === GAME OVER VIEW ===
+    if (gameOverInfo) {
+      const { finish_order, hands } = gameOverInfo;
+      return (
+        <div style={{ textAlign: "center", marginTop: "3rem" }}>
+          <h2>Game Over!</h2>
+          <ol style={{ textAlign: "left", margin: "1rem auto", display: "inline-block" }}>
+            {finish_order.map((player, i) => (
+              <li key={player} style={{ fontWeight: player === username ? "bold" : undefined }}>
+                {i === 0 ? "🥇 " : i === 1 ? "🥈 " : i === 2 ? "🥉 " : ""}
+                {player} {player === username && "(You)"}
+              </li>
+            ))}
+          </ol>
+          <h3>Final Hands</h3>
+          <ul style={{ listStyle: "none", padding: 0 }}>
+            {players.map(player => (
+              <li key={player} style={{ marginBottom: 8 }}>
+                <span style={{ fontWeight: player === username ? "bold" : undefined }}>
+                  {player}:
+                </span>
+                {" "}
+                {hands && hands[player] && hands[player].length > 0
+                  ? hands[player].sort((a, b) => cardSortKey(a) - cardSortKey(b)).map(card => (
+                      <img
+                        key={card}
+                        src={`${process.env.PUBLIC_URL}/cards/${card}.svg`}
+                        alt={card}
+                        style={{ width: 38, height: 54, margin: "0 1px", verticalAlign: "middle" }}
+                      />
+                    ))
+                  : <span style={{ color: "#888" }}>Empty</span>
+                }
+              </li>
+            ))}
+          </ul>
+          {isCreator && (
+            <div style={{ marginTop: 24 }}>
+              <button
+                style={{
+                  background: "#0083e1",
+                  color: "#fff",
+                  padding: "12px 32px",
+                  fontSize: "1.2rem",
+                  borderRadius: 8
+                }}
+                onClick={startGame}
+              >
+                Start New Game
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // === NORMAL GAME VIEW ===
     return (
       <div style={{ textAlign: "center", marginTop: "4rem" }}>
         <h2>Room {roomId}</h2>
@@ -152,9 +234,18 @@ function App() {
           {players.map(player => (
             <li key={player}>
               {player}{" "}
-              <span style={{ color: readyStates[player] ? "green" : "gray" }}>
-                {readyStates[player] ? "✔️ Ready" : "⏳ Not Ready"}
-              </span>
+              {currentPlayer
+                ? (
+                  passedPlayers.includes(player)
+                    ? <span style={{ color: "#ad0000" }}>⏸️ Passed</span>
+                    : <span style={{ color: "#189a10" }}>▶️ Playing</span>
+                )
+                : (
+                  <span style={{ color: readyStates[player] ? "green" : "gray" }}>
+                    {readyStates[player] ? "✔️ Ready" : "⏳ Not Ready"}
+                  </span>
+                )
+              }
             </li>
           ))}
         </ul>
@@ -182,13 +273,22 @@ function App() {
                 ? <span style={{ color: "#999" }}>None yet</span>
                 : (
                   currentPlay.cards.length > 0
-                    ? currentPlay.cards.map(card =>
-                        <img
-                          key={card}
-                          src={`${process.env.PUBLIC_URL}/cards/${card}.svg`}
-                          alt={card}
-                          style={{ width: 40, height: 56, verticalAlign: "middle", marginRight: 3 }}
-                        />
+                    ? (
+                        <>
+                          {currentPlay.cards.map(card =>
+                            <img
+                              key={card}
+                              src={`${process.env.PUBLIC_URL}/cards/${card}.svg`}
+                              alt={card}
+                              style={{ width: 40, height: 56, verticalAlign: "middle", marginRight: 3 }}
+                            />
+                          )}
+                          {lastPlayType &&
+                            <span style={{ marginLeft: 10, color: "#317cff", fontWeight: "bold" }}>
+                              {handTypeLabelString(lastPlayType)}
+                            </span>
+                          }
+                        </>
                       )
                     : <span>Pass</span>
                 )
@@ -237,10 +337,22 @@ function App() {
                 >
                   Play Selected
                 </button>
-                <button onClick={passTurn}>Pass</button>
+                {canEndRound
+                  ? (
+                    <button
+                      style={{ background: "#28a745", color: "#fff", padding: "10px 24px", fontSize: "1rem", borderRadius: 6 }}
+                      onClick={endRound}
+                    >
+                      End Round
+                    </button>
+                  )
+                  : (
+                    <button onClick={passTurn}>Pass</button>
+                  )
+                }
               </>
             )}
-            {!yourTurn && <p>Waiting for <strong>{currentPlayer}</strong> to play...</p>}
+            {!yourTurn && !canEndRound && <p>Waiting for <strong>{currentPlayer}</strong> to play...</p>}
           </>
         )}
       </div>
