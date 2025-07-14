@@ -3,6 +3,8 @@ import React, { useState } from "react";
 function CreateJoinRoom({ onCreateRoom, onJoinRoom }) {
   const [username, setUsername] = useState("");
   const [roomId, setRoomId] = useState("");
+  const [roomName, setRoomName] = useState(""); // New: Optional room name
+  // Removed wildCards/cardBack from here, now defaults are in backend
 
   return (
     <div style={{ textAlign: "center", marginTop: "4rem" }}>
@@ -16,11 +18,20 @@ function CreateJoinRoom({ onCreateRoom, onJoinRoom }) {
           style={{ padding: 8, fontSize: 16, marginBottom: 10 }}
         />
         <br />
+        <h3>Create a Room</h3>
+        <input
+          type="text"
+          placeholder="(Optional) Room Name"
+          value={roomName}
+          onChange={e => setRoomName(e.target.value)}
+          style={{ padding: 8, fontSize: 16, marginBottom: 10 }}
+        />
+        <br />
         <button
           style={{ marginTop: 10, padding: "8px 20px", fontSize: 16 }}
           onClick={() => {
             if (username.trim()) {
-              onCreateRoom({ username });
+              onCreateRoom({ username, roomName }); // No settings needed, backend handles defaults
             } else {
               alert("Please enter your name.");
             }

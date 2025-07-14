@@ -1,24 +1,27 @@
+// guandan-frontend/src/App.js
+
 import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 import CreateJoinRoom from "./CreateJoinRoom";
 
-const BACKEND_URL = "http://localhost:5000";
+// ---- Card mapping helpers ----
 const CARD_RANK_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2', 'JoB', 'JoR'];
 const SUITS = ["hearts", "spades", "clubs", "diamonds"];
 const SUIT_SYMBOLS = {
   hearts: "♥",
   spades: "♠",
   diamonds: "♦",
-  clubs: "♣",
+  clubs: "♣"
 };
 const SUIT_COLORS = {
   hearts: "#c62a41",
   diamonds: "#2288ff",
   spades: "#222",
-  clubs: "#028b58",
+  clubs: "#028b58"
 };
 const LEVEL_SEQUENCE = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 
+// --- Helper: Card sorting key for showing hands ---
 function cardSortKey(card, levelRank) {
   if (card === "JoR") return 100;
   if (card === "JoB") return 99;
@@ -33,8 +36,7 @@ function getCardRank(card) {
 function getCardSuit(card) {
   if (card === "JoB" || card === "JoR") return null;
   const code = card.length === 3 ? card[2] : card[1];
-  if (!code) return null;
-  switch (code.toUpperCase()) {
+  switch (code?.toUpperCase()) {
     case "H": return "hearts";
     case "S": return "spades";
     case "C": return "clubs";
@@ -79,7 +81,9 @@ function seatTeam(idx) {
   return idx % 2 === 0 ? "A" : "B";
 }
 
+// ================= MAIN APP ===================
 export default function App() {
+  // Core game/lobby state
   const [connected, setConnected] = useState(false);
   const [inRoom, setInRoom] = useState(false);
   const [lobbyInfo, setLobbyInfo] = useState(null);
@@ -96,24 +100,26 @@ export default function App() {
   const [levels, setLevels] = useState({});
   const [teams, setTeams] = useState([[], []]);
   const [slots, setSlots] = useState([null, null, null, null]);
-  const [settings, setSettings] = useState({ cardBack: "red", wildCards: false, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+  const [settings, setSettings] = useState({ cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2", "2", "2", "2"] });
   const [levelRank, setLevelRank] = useState("2");
-  const [wildCards, setWildCards] = useState(false);
+  const [wildCards, setWildCards] = useState(true); // default is now true!
   const [trumpSuit, setTrumpSuit] = useState("hearts");
   const [startingLevels, setStartingLevels] = useState(["2","2","2","2"]);
   const [hands, setHands] = useState({});
-  // --- ERROR STATE ---
   const [errorMsg, setErrorMsg] = useState("");
 
+  // Keep lobbyInfo ref updated
   useEffect(() => { lobbyInfoRef.current = lobbyInfo; }, [lobbyInfo]);
 
+  // ---- SOCKET CONNECTION + EVENT HANDLERS ----
   useEffect(() => {
-    const s = io(BACKEND_URL, { transports: ["polling"] });
+    const s = io("http://localhost:5000", { transports: ["polling"] });
     setSocket(s);
 
     s.on("connect", () => setConnected(true));
     s.on("disconnect", () => setConnected(false));
 
+    // ---- Lobby/Game Join
     s.on("room_joined", data => {
       setLobbyInfo(data);
       setInRoom(true);
@@ -128,35 +134,39 @@ export default function App() {
       setLevels(data.levels || {});
       setTeams(data.teams || [[], []]);
       setSlots(data.slots || [null, null, null, null]);
-      setSettings(data.settings || { cardBack: "red", wildCards: false, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
-      setWildCards((data.settings && data.settings.wildCards) || false);
+      setSettings(data.settings || { cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+      setWildCards((data.settings && typeof data.settings.wildCards === "boolean") ? data.settings.wildCards : true);
       setTrumpSuit((data.settings && data.settings.trumpSuit) || "hearts");
       setStartingLevels((data.settings && data.settings.startingLevels) || ["2","2","2","2"]);
       setLevelRank((data.levelRank) || "2");
       setHands({});
     });
 
+    // ---- Room Update: keeps lobby state in sync for everyone
     s.on("room_update", data => {
       setLobbyInfo(prev => prev ? {
         ...prev,
         players: data.players,
         readyStates: data.readyStates ?? {},
+        slots: data.slots ?? prev.slots,
       } : null);
       setLevels(data.levels || {});
       setTeams(data.teams || [[], []]);
       setSlots(data.slots || [null, null, null, null]);
-      setSettings(data.settings || { cardBack: "red", wildCards: false, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
-      setWildCards((data.settings && data.settings.wildCards) || false);
+      setSettings(data.settings || { cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+      setWildCards((data.settings && typeof data.settings.wildCards === "boolean") ? data.settings.wildCards : true);
       setTrumpSuit((data.settings && data.settings.trumpSuit) || "hearts");
       setStartingLevels((data.settings && data.settings.startingLevels) || ["2","2","2","2"]);
     });
 
+    // ---- Deal your hand privately
     s.on("deal_hand", data => {
       if (lobbyInfoRef.current && data.username === lobbyInfoRef.current.username) {
         setPlayerHand(data.hand);
       }
     });
 
+    // ---- Game Start
     s.on("game_started", data => {
       setCurrentPlayer(data.current_player);
       setCurrentPlay(null);
@@ -168,14 +178,15 @@ export default function App() {
       setLevels(data.levels || {});
       setTeams(data.teams || [[], []]);
       setSlots(data.slots || [null, null, null, null]);
-      setSettings(data.settings || { cardBack: "red", wildCards: false, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
-      setWildCards((data.wildCards) || false);
+      setSettings(data.settings || { cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+      setWildCards((typeof data.wildCards === "boolean") ? data.wildCards : true);
       setTrumpSuit((data.trumpSuit) || "hearts");
       setStartingLevels((data.startingLevels) || ["2","2","2","2"]);
       setLevelRank((data.levelRank) || "2");
       setHands(data.hands || {});
     });
 
+    // ---- In-game updates (after every move)
     s.on("game_update", data => {
       setCurrentPlay(data.current_play);
       setCurrentPlayer(data.current_player);
@@ -185,8 +196,8 @@ export default function App() {
       setLevels(data.levels || {});
       setTeams(data.teams || [[], []]);
       setSlots(data.slots || [null, null, null, null]);
-      setSettings(data.settings || { cardBack: "red", wildCards: false, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
-      setWildCards((data.wildCards) || false);
+      setSettings(data.settings || { cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+      setWildCards((typeof data.wildCards === "boolean") ? data.wildCards : true);
       setTrumpSuit((data.trumpSuit) || "hearts");
       setStartingLevels((data.startingLevels) || ["2","2","2","2"]);
       setLevelRank((data.levelRank) || "2");
@@ -199,6 +210,7 @@ export default function App() {
       }
     });
 
+    // ---- Game End
     s.on("game_over", data => {
       setGameOverInfo(data);
       setCurrentPlayer(null);
@@ -209,51 +221,48 @@ export default function App() {
       setLevels(data.levels || {});
       setTeams(data.teams || [[], []]);
       setSlots(data.slots || [null, null, null, null]);
-      setSettings(data.settings || { cardBack: "red", wildCards: false, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
-      setWildCards((data.wildCards) || false);
+      setSettings(data.settings || { cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+      setWildCards((typeof data.wildCards === "boolean") ? data.wildCards : true);
       setTrumpSuit((data.trumpSuit) || "hearts");
       setStartingLevels((data.startingLevels) || ["2","2","2","2"]);
       setLevelRank((data.levelRank) || "2");
       setHands(data.hands || {});
     });
 
-    // --- ERROR HANDLING (auto-dismiss after 4s) ---
-    s.on("error_msg", msg => {
-      setErrorMsg(msg);
-      setTimeout(() => setErrorMsg(""), 4000);
-    });
+    // ---- Error messages
+    s.on("error_msg", msg => { setErrorMsg(msg); alert(msg); });
 
     return () => { s.disconnect(); };
     // eslint-disable-next-line
   }, []);
 
-  const handleCreateRoom = ({ username }) => {
+  // ---- ROOM ACTION HANDLERS ----
+  const handleCreateRoom = ({ username, roomName }) => {
     if (socket) socket.emit("create_room", {
       username,
+      roomName,
       cardBack: "red",
-      wildCards: false,
+      wildCards: true, // default to "Leading Team's Level"
       trumpSuit: "hearts",
       startingLevels: ["2", "2", "2", "2"]
     });
   };
-
   const handleJoinRoom = ({ username, roomId }) => {
     if (socket) socket.emit("join_room", { username, roomId });
   };
 
+  // ---- GAMEPLAY ACTIONS ----
   const toggleReady = () => {
     if (!socket || !lobbyInfo) return;
     const { roomId, username, readyStates } = lobbyInfo;
     const currentlyReady = readyStates ? readyStates[username] : false;
     socket.emit("set_ready", { roomId, username, ready: !currentlyReady });
   };
-
   const startGame = () => {
     if (!socket || !lobbyInfo) return;
     const { roomId, username } = lobbyInfo;
     socket.emit("start_game", { roomId, username });
   };
-
   const playSelectedCards = () => {
     if (!socket || !lobbyInfo) return;
     const { roomId, username } = lobbyInfo;
@@ -261,20 +270,19 @@ export default function App() {
     socket.emit("play_cards", { roomId, username, cards: selectedCards });
     setSelectedCards([]);
   };
-
   const passTurn = () => {
     if (!socket || !lobbyInfo) return;
     const { roomId, username } = lobbyInfo;
     socket.emit("pass_turn", { roomId, username });
     setSelectedCards([]);
   };
-
   const endRound = () => {
     if (!socket || !lobbyInfo) return;
     const { roomId, username } = lobbyInfo;
     socket.emit("end_round", { roomId, username });
   };
 
+  // ---- LOBBY SETTINGS ----
   const handleChangeTrump = (suit) => {
     if (!socket || !lobbyInfo) return;
     setTrumpSuit(suit);
@@ -285,7 +293,6 @@ export default function App() {
       settings: newSettings
     });
   };
-
   const handleChangeWild = (enabled) => {
     if (!socket || !lobbyInfo) return;
     setWildCards(enabled);
@@ -296,7 +303,6 @@ export default function App() {
       settings: newSettings
     });
   };
-
   const handleChangeStartingLevel = (slotIdx, newLevel) => {
     if (!socket || !lobbyInfo) return;
     const updated = [...startingLevels];
@@ -309,7 +315,6 @@ export default function App() {
       settings: newSettings
     });
   };
-
   const handleMoveSeat = (idx) => {
     if (!socket || !lobbyInfo) return;
     const { roomId, username } = lobbyInfo;
@@ -336,6 +341,7 @@ export default function App() {
 
   // === GAME OVER VIEW ===
   if (inRoom && lobbyInfo && gameOverInfo) {
+    const { roomId, username } = lobbyInfo;
     const { finish_order, hands: finalHands, levels: finalLevels, teams: finalTeams, winning_team, win_type, level_up, trumpSuit: gameTrump, levelRank: gameLevel, wildCards: gameWilds } = gameOverInfo;
     return (
       <div style={{ textAlign: "center", marginTop: "2rem" }}>
@@ -512,40 +518,36 @@ export default function App() {
     );
   }
 
-  // === GAMEPLAY SCREEN ===
+  // ---- 3. GAMEPLAY SCREEN (show hands: yours face up, others as card backs) ----
   if (inRoom && lobbyInfo && currentPlayer) {
     const { roomId, username, readyStates = {} } = lobbyInfo;
     const yourTurn = currentPlayer === username;
 
     // Compute each team's level for the current round (minimum of player levels)
     const teamALevel = teams[0] && teams[0].length
-      ? LEVEL_SEQUENCE[
-          Math.min(...teams[0].map(p => LEVEL_SEQUENCE.indexOf(levels[p] || "2")))
-        ]
+      ? LEVEL_SEQUENCE[Math.min(...teams[0].map(p => LEVEL_SEQUENCE.indexOf(levels[p] || "2")))]
       : "-";
     const teamBLevel = teams[1] && teams[1].length
-      ? LEVEL_SEQUENCE[
-          Math.min(...teams[1].map(p => LEVEL_SEQUENCE.indexOf(levels[p] || "2")))
-        ]
+      ? LEVEL_SEQUENCE[Math.min(...teams[1].map(p => LEVEL_SEQUENCE.indexOf(levels[p] || "2")))]
       : "-";
+
+    console.log("hands object:", hands);
 
     return (
       <div style={{ textAlign: "center", marginTop: "2.2rem" }}>
-        {renderErrorBanner()}
-        <h2>Room {roomId}</h2>
-        <div style={{ marginBottom: 5 }}>
-          <span style={{ fontWeight: 600 }}>Trump Suit:</span>{" "}
-          <span style={{ color: SUIT_COLORS[trumpSuit], fontWeight: "bold" }}>
+        {/* Game Info Bar */}
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>
+          Trump Suit: <span style={{ color: SUIT_COLORS[trumpSuit], fontWeight: "bold" }}>
             {SUIT_SYMBOLS[trumpSuit]} {trumpSuit.charAt(0).toUpperCase() + trumpSuit.slice(1)}
           </span>
           {" | "}
-          <span style={{ fontWeight: 600 }}>Current Round Level:</span>{" "}
-          <span style={{ color: "#ea6700" }}>{levelRank}</span>
+          Current Level: <span style={{ color: "#ea6700" }}>{levelRank}</span>
           {" | "}
-          <span style={{ fontWeight: 600 }}>Wild:</span>{" "}
-          <span style={{ color: "#9e3ad7", fontWeight: "bold" }}>{wildCards ? "Leading Team's Level" : "None"}</span>
+          Wild: <span style={{ color: "#9e3ad7", fontWeight: "bold" }}>
+            {wildCards ? "Leading Team's Level" : "None"}
+          </span>
         </div>
-        {/* Team levels */}
+        {/* Team Status */}
         <div style={{ marginBottom: 10 }}>
           <strong>Team A Level:</strong>{" "}
           <span style={{ color: "#ea6700" }}>{teamALevel}</span>
@@ -553,96 +555,60 @@ export default function App() {
           <strong>Team B Level:</strong>{" "}
           <span style={{ color: "#ea6700" }}>{teamBLevel}</span>
         </div>
-        {/* Table hands */}
+        {/* All Hands: Show only opponents (face down), NOT your own hand here! */}
         <div style={{
           display: "flex",
           justifyContent: "center",
-          alignItems: "flex-end",
           gap: "2.5rem",
-          margin: "2.2rem 0 0.5rem 0"
+          marginBottom: "2rem"
         }}>
           {slots.map((player, idx) => {
-            if (!player) return (
-              <div key={idx} style={{ minWidth: 110, opacity: 0.5 }}>
-                <div style={{ height: 60 }}></div>
-                <div style={{ fontSize: 16, color: "#bbb" }}>Empty</div>
-              </div>
-            );
-            const isSelf = player === lobbyInfo.username;
-            const handLength = isSelf
-              ? playerHand.length
-              : (hands && hands[player] ? hands[player].length : 0);
+            if (!player) {
+              return (
+                <div key={idx} style={{ minWidth: 110, opacity: 0.5 }}>
+                  <div style={{ height: 60 }}></div>
+                  <div style={{ fontSize: 16, color: "#bbb" }}>Empty</div>
+                </div>
+              );
+            }
+            if (player === lobbyInfo.username) {
+              return <div key={player} style={{ minWidth: 110 }}></div>;
+            }
+            const hand = hands && hands[player] ? hands[player] : [];
             return (
               <div key={player} style={{ minWidth: 110 }}>
-                <div style={{ marginBottom: 4, fontWeight: isSelf ? "bold" : undefined }}>
-                  {player}
-                  {isSelf && " (You)"}
-                  {" "}
-                  <span style={{
-                    color: idx % 2 === 0 ? "#1976d2" : "#a06d2d",
-                    fontWeight: 500
-                  }}>
-                    [{seatTeam(idx) === "A" ? "Team A" : "Team B"}]
-                  </span>
-                </div>
+                <div style={{ marginBottom: 4 }}>{player}</div>
                 <div style={{
                   display: "flex",
                   justifyContent: "center",
                   alignItems: "center",
                   height: 60
                 }}>
-                  {isSelf
-                    ? [...playerHand]
-                        .sort((a, b) => cardSortKey(a, levelRank) - cardSortKey(b, levelRank))
-                        .map((card, i) => (
-                          <CardImg
-                            key={card + i}
-                            card={card}
-                            trumpSuit={trumpSuit}
-                            levelRank={levelRank}
-                            wildCards={wildCards}
-                            highlightWild
-                            highlightTrump
-                            onClick={() => {
-                              if (!selectedCards.includes(card)) {
-                                setSelectedCards([...selectedCards, card]);
-                              } else {
-                                setSelectedCards(selectedCards.filter(c => c !== card));
-                              }
-                            }}
-                            style={{
-                              width: 36,
-                              height: 52,
-                              marginLeft: i === 0 ? 0 : -14,
-                              border: selectedCards.includes(card) ? "2px solid #005fff" : "1px solid #aaa",
-                              borderRadius: 6,
-                              cursor: "pointer",
-                              boxShadow: selectedCards.includes(card) ? "0 0 8px #005fff88" : undefined,
-                              background: "white"
-                            }}
-                          />
-                        ))
-                    : Array.from({ length: handLength }).map((_, i) => (
-                        <img
-                          key={i}
-                          src={process.env.PUBLIC_URL + `/cards/back_${settings.cardBack[0]}.svg`}
-                          alt="Back"
-                          style={{
-                            width: 36,
-                            height: 52,
-                            marginLeft: i === 0 ? 0 : -14,
-                            borderRadius: 6,
-                            border: "1px solid #aaa",
-                            background: "#eee"
-                          }}
-                        />
-                      ))
-                  }
+                  {Array.from({ length: hand.length }).map((_, i) => (
+                    <img
+                      key={i}
+                      src={process.env.PUBLIC_URL + `/cards/back_${settings.cardBack[0]}.svg`}
+                      alt="Back"
+                      style={{
+                        width: 36,
+                        height: 52,
+                        marginLeft: i === 0 ? 0 : -14,
+                        borderRadius: 6,
+                        border: "1px solid #aaa",
+                        background: "#eee"
+                      }}
+                    />
+                  ))}
+                </div>
+                <div style={{ fontSize: 12, color: "#555" }}>
+                  Cards: {hand.length}
                 </div>
               </div>
             );
           })}
         </div>
+
+        {/* Player status list */}
         <ul style={{ listStyle: "none", padding: 0, margin: "1.4rem 0 1.2rem 0" }}>
           {slots.map((player, idx) => (
             <li key={idx}>
@@ -687,6 +653,7 @@ export default function App() {
           ))}
         </ul>
         <h3>Current turn: <span style={{ color: yourTurn ? "#0048ab" : undefined }}>{currentPlayer}</span></h3>
+        {/* Last play area */}
         <div style={{ marginBottom: 10 }}>
           <strong>Last play:</strong>{" "}
           {currentPlay === null
@@ -719,6 +686,7 @@ export default function App() {
           }
           {currentPlay && currentPlay.player ? ` by ${currentPlay.player}` : ""}
         </div>
+        {/* === Your hand: full sized, overlapped, selectable === */}
         <h3>Your hand:</h3>
         <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", marginBottom: 10 }}>
           {[...playerHand]
@@ -744,7 +712,7 @@ export default function App() {
                   style={{
                     width: 50,
                     height: 70,
-                    margin: "0.25rem",
+                    marginLeft: idx === 0 ? 0 : -24, // Overlap for your hand
                     border: isSelected ? "3px solid #005fff" : "1px solid #222",
                     borderRadius: 6,
                     cursor: "pointer",
@@ -756,6 +724,7 @@ export default function App() {
               );
             })}
         </div>
+        {/* Play/pass/end round controls */}
         {yourTurn && (
           <>
             <button
@@ -785,14 +754,13 @@ export default function App() {
     );
   }
 
-  // --- Landing/Join Page ---
+  // ---- 4. LANDING/Lobby screen ----
   return (
     <div>
       <h1 style={{ textAlign: "center" }}>Guan Dan Web Game</h1>
       <h3 style={{ textAlign: "center", color: connected ? "green" : "red" }}>
         Socket.IO: {connected ? "Connected" : "Disconnected"}
       </h3>
-      {renderErrorBanner()}
       <CreateJoinRoom onCreateRoom={handleCreateRoom} onJoinRoom={handleJoinRoom} />
     </div>
   );
@@ -880,6 +848,7 @@ function LobbySeat({ idx, player, yourName, isCreator, startingLevel, onMove, on
   );
 }
 
+// --- CardImg: Renders a single card face or (optionally) highlights trump/wild ---
 function CardImg({ card, trumpSuit, levelRank, wildCards, onClick, highlightWild, highlightTrump, style }) {
   const isJoker = card === "JoB" || card === "JoR";
   const suit = getCardSuit(card);

@@ -49,8 +49,9 @@ def index():
 @socketio.on('create_room')
 def handle_create_room(data):
     username = data.get('username')
+    room_name = data.get('roomName', '')  # Optional from frontend
     card_back = data.get('cardBack', 'red')
-    wild_cards = data.get('wildCards', False)
+    wild_cards = data.get('wildCards', True)
     trump_suit = data.get('trumpSuit', 'hearts')
     starting_levels = data.get('startingLevels', ["2", "2", "2", "2"])
 
@@ -58,18 +59,25 @@ def handle_create_room(data):
         emit('error_msg', "Username required.", room=request.sid)
         return
 
-    # Let's assume room id is auto-generated, but you want to prevent the same username in any room
-    for room_id, room in rooms.items():
-        if username in room.get('players', []):
-            emit('error_msg', f"Username '{username}' already exists in room '{room_id}'.", room=request.sid)
+    # Use user-supplied lobby name if present, otherwise generate one
+    if room_name:
+        # Sanitize: lowercase, replace spaces with dashes
+        room_id = room_name.strip().lower().replace(" ", "-")
+    else:
+        room_id = generate_room_id()
+
+    # Check for existing room
+    if room_id in rooms:
+        emit('error_msg', "Game lobby already exists with that name", room=request.sid)
+        return
+
+    # Optionally check if username is already in use in another room
+    for existing in rooms.values():
+        if username in existing.get("players", []):
+            emit('error_msg', f"Username '{username}' already exists in another room.", room=request.sid)
             return
 
-    # Generate a unique room id
-    room_id = generate_room_id()
-    while room_id in rooms:
-        room_id = generate_room_id()
-    
-    # Actually create the room
+    # --- Create the new room with slot 0 assigned to creator ---
     rooms[room_id] = {
         "settings": {
             "cardBack": card_back,
@@ -78,15 +86,21 @@ def handle_create_room(data):
             "startingLevels": starting_levels
         },
         "players": [username],
+        "slots": [username, None, None, None],
         "ready": {username: False},
-        "hands": {}
-    }
+        "hands": {},
+        "connected_sids": set([request.sid])   
+}
+    print(f"[rooms.py] Room {room_id} created with settings {rooms[room_id]['settings']}")
 
-    # Success!
+    sio_join_room(room_id)
+    rooms[room_id].setdefault("connected_sids", set()).add(request.sid)
+
     emit('room_joined', {
         "roomId": room_id,
         "username": username,
         "players": [username],
+        "slots": rooms[room_id]["slots"],
         "settings": rooms[room_id]["settings"]
     }, room=request.sid)
 
@@ -140,12 +154,18 @@ def handle_move_seat(data):
     if slots[slot_idx]:
         emit('error_msg', "Seat already taken.", room=request.sid)
         return
+    # Remove user from previous slot, if any
     for i in range(4):
         if slots[i] == username:
             slots[i] = None
+    # Assign to new slot
     slots[slot_idx] = username
+    rooms[room_id]["slots"] = slots
+    # Update teams based on slot arrangement
     rooms[room_id]["teams"] = get_teams_from_slots(slots)
+    # Broadcast updated room state to all players in the room
     broadcast_room_update(room_id)
+
 
 @socketio.on('update_room_settings')
 def handle_update_room_settings(data):
@@ -159,21 +179,21 @@ def handle_update_room_settings(data):
     broadcast_room_update(room_id)
 
 def broadcast_room_update(room_id):
-    if room_id in rooms:
-        slots = rooms[room_id].get("slots", initial_slots())
-        settings = rooms[room_id].get("settings", {})
-        teams = get_teams_from_slots(slots)
-        ready_states = get_ready_states(room_id) or {}
-        levels = rooms[room_id].get("levels", {})
-        emit('room_update', {
-            "roomId": room_id,
-            "players": [u for u in slots if u],
-            "readyStates": ready_states,  # ALWAYS INCLUDE THIS
-            "levels": levels,
-            "teams": teams,
-            "slots": slots,
-            "settings": settings,
-        }, room=room_id)
+    """Emit the full current lobby state to all users in the room."""
+    if room_id not in rooms:
+        return
+    room = rooms[room_id]
+    emit('room_update', {
+        "roomId": room_id,
+        "players": room.get("players", []),
+        "slots": room.get("slots", [None, None, None, None]),
+        "readyStates": room.get("ready", {}),
+        "settings": room.get("settings", {}),
+        "teams": room.get("teams", [[], []]),  # If you support teams
+        "levels": room.get("levels", {}),      # If you track per-player/team levels
+        "startingLevels": room["settings"].get("startingLevels", ["2","2","2","2"])
+        # Add any other state you want the frontend to keep in sync
+    }, room=room_id)
 
 @socketio.on('set_ready')
 def handle_set_ready(data):
@@ -222,7 +242,7 @@ def start_new_game_round(room_id):
     team_lvls = [levels[p] for p in winning_team]
     current_level = min(team_lvls, key=lambda lv: LEVEL_SEQUENCE.index(lv))
     trump_suit = settings.get("trumpSuit", "hearts")
-    wild_cards = settings.get("wildCards", False)
+    wild_cards = settings.get("wildCards", True)
     rooms[room_id]['game'] = {
         'players': players,
         'turn_index': 0,
@@ -246,7 +266,8 @@ def start_new_game_round(room_id):
         "trumpSuit": trump_suit,
         "levelRank": current_level,
         "wildCards": wild_cards,
-        "startingLevels": starting_levels
+        "startingLevels": starting_levels,
+        "hands": {p: rooms[room_id]['hands'][p] for p in players}
     }, room=room_id)
     broadcast_room_update(room_id)
     for player in players:
@@ -471,9 +492,35 @@ def handle_connect():
     print('A client connected, sid:', request.sid)
     emit('message', {'msg': 'Connected to Guandan server!'})
 
+import threading
+
 @socketio.on('disconnect')
 def handle_disconnect():
     print('A client disconnected, sid:', request.sid)
+    rooms_to_cleanup = []
+
+    # Remove this SID from all rooms (a user might be in multiple rooms in rare cases)
+    for room_id, room in list(rooms.items()):
+        sids = room.get("connected_sids", set())
+        if request.sid in sids:
+            sids.remove(request.sid)
+            room["connected_sids"] = sids
+            # If room is now empty, mark for delayed cleanup
+            if not sids:
+                rooms_to_cleanup.append(room_id)
+
+    # Delay cleanup by 10 seconds (so if someone rejoins, room is not deleted)
+    def delayed_cleanup(room_id):
+        import time
+        time.sleep(10)
+        # Double check room still exists and is still empty
+        if room_id in rooms and not rooms[room_id].get("connected_sids"):
+            print(f"[Room Cleanup] Deleting room {room_id} after 10s of inactivity.")
+            del rooms[room_id]
+
+    for room_id in rooms_to_cleanup:
+        threading.Thread(target=delayed_cleanup, args=(room_id,)).start()
+
 
 if __name__ == "__main__":
     print("Starting Guandan backend with async_mode =", socketio.async_mode)
