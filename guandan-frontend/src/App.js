@@ -4,6 +4,15 @@ import CreateJoinRoom from "./CreateJoinRoom";
 
 const BACKEND_URL = "http://localhost:5000";
 
+// Card order: 3 < 4 < ... < K < A < 2 < JoB < JoR
+const CARD_RANK_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2', 'JoB', 'JoR'];
+
+function cardSortKey(card) {
+  if (card === "JoB" || card === "JoR") return CARD_RANK_ORDER.indexOf(card);
+  const rank = card.startsWith("Jo") ? card : card.slice(0, -1);
+  return CARD_RANK_ORDER.indexOf(rank.toUpperCase());
+}
+
 function App() {
   const [connected, setConnected] = useState(false);
   const [inRoom, setInRoom] = useState(false);
@@ -17,7 +26,6 @@ function App() {
   const [currentPlay, setCurrentPlay] = useState(null);
   const [selectedCards, setSelectedCards] = useState([]);
 
-  // Keep lobbyInfoRef in sync with state
   useEffect(() => {
     lobbyInfoRef.current = lobbyInfo;
   }, [lobbyInfo]);
@@ -47,7 +55,6 @@ function App() {
     });
 
     s.on("deal_hand", data => {
-      // Only update if this hand belongs to this client
       if (lobbyInfoRef.current && data.username === lobbyInfoRef.current.username) {
         setPlayerHand(data.hand);
       }
@@ -171,48 +178,55 @@ function App() {
             <h3>Current turn: <span style={{ color: yourTurn ? "#0048ab" : undefined }}>{currentPlayer}</span></h3>
             <div style={{ marginBottom: 10 }}>
               <strong>Last play:</strong>{" "}
-              {currentPlay && currentPlay.cards.length > 0
-                ? currentPlay.cards.map(card =>
-                    <img
-                      key={card}
-                      src={`${process.env.PUBLIC_URL}/cards/${card}.svg`}
-                      alt={card}
-                      style={{ width: 40, height: 56, verticalAlign: "middle", marginRight: 3 }}
-                    />
-                  )
-                : <span>Pass</span>}
-              {currentPlay ? ` by ${currentPlay.player}` : ""}
+              {currentPlay === null
+                ? <span style={{ color: "#999" }}>None yet</span>
+                : (
+                  currentPlay.cards.length > 0
+                    ? currentPlay.cards.map(card =>
+                        <img
+                          key={card}
+                          src={`${process.env.PUBLIC_URL}/cards/${card}.svg`}
+                          alt={card}
+                          style={{ width: 40, height: 56, verticalAlign: "middle", marginRight: 3 }}
+                        />
+                      )
+                    : <span>Pass</span>
+                )
+              }
+              {currentPlay && currentPlay.player ? ` by ${currentPlay.player}` : ""}
             </div>
             <h3>Your hand:</h3>
             <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", marginBottom: 10 }}>
-              {playerHand.map((card, idx) => {
-                const isSelected = selectedCards.includes(card);
-                return (
-                  <img
-                    key={card + idx}
-                    src={`${process.env.PUBLIC_URL}/cards/${card}.svg`}
-                    alt={card}
-                    onClick={() => {
-                      if (!isSelected) {
-                        setSelectedCards([...selectedCards, card]);
-                      } else {
-                        setSelectedCards(selectedCards.filter(c => c !== card));
-                      }
-                    }}
-                    style={{
-                      width: 50,
-                      height: 70,
-                      margin: "0.25rem",
-                      border: isSelected ? "3px solid #005fff" : "1px solid #222",
-                      borderRadius: 6,
-                      cursor: "pointer",
-                      userSelect: "none",
-                      boxShadow: isSelected ? "0 0 8px #005fff88" : undefined,
-                      background: "white"
-                    }}
-                  />
-                );
-              })}
+              {[...playerHand]
+                .sort((a, b) => cardSortKey(a) - cardSortKey(b))
+                .map((card, idx) => {
+                  const isSelected = selectedCards.includes(card);
+                  return (
+                    <img
+                      key={card + idx}
+                      src={`${process.env.PUBLIC_URL}/cards/${card}.svg`}
+                      alt={card}
+                      onClick={() => {
+                        if (!isSelected) {
+                          setSelectedCards([...selectedCards, card]);
+                        } else {
+                          setSelectedCards(selectedCards.filter(c => c !== card));
+                        }
+                      }}
+                      style={{
+                        width: 50,
+                        height: 70,
+                        margin: "0.25rem",
+                        border: isSelected ? "3px solid #005fff" : "1px solid #222",
+                        borderRadius: 6,
+                        cursor: "pointer",
+                        userSelect: "none",
+                        boxShadow: isSelected ? "0 0 8px #005fff88" : undefined,
+                        background: "white"
+                      }}
+                    />
+                  );
+                })}
             </div>
             {yourTurn && (
               <>
