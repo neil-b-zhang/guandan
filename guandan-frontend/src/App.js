@@ -157,7 +157,10 @@ export default function App() {
   const [hands, setHands] = useState({});
   const [errorMsg, setErrorMsg] = useState("");
   const [handOrder, setHandOrder] = useState([]);
-  
+  const [tributeState, setTributeState] = useState(null);
+  const [finishOrder, setFinishOrder] = useState([]);
+  const [gamePhase, setGamePhase] = useState("lobby"); // "lobby" | "game" | "hand_over"
+  const [handOverInfo, setHandOverInfo] = useState(null);
 
   // Store last hand length to detect when new cards are dealt
   const prevHandLength = useRef(0);
@@ -254,10 +257,16 @@ export default function App() {
       setStartingLevels((data.startingLevels) || ["2","2","2","2"]);
       setLevelRank((data.levelRank) || "2");
       setHands(data.hands || {});
+      setGamePhase("game");
     });
 
     // ---- In-game updates (after every move)
     s.on("game_update", data => {
+      console.log("[SOCKET] Game update:");
+      console.log("  current_player:", data.current_player);
+      console.log("  can_end_round:", data.can_end_round);
+      console.log("  finish_order:", data.finish_order);
+      console.log("  passed_players:", data.passed_players);
       setCurrentPlay(data.current_play);
       setCurrentPlayer(data.current_player);
       setCanEndRound(data.can_end_round || false);
@@ -272,6 +281,11 @@ export default function App() {
       setStartingLevels((data.startingLevels) || ["2","2","2","2"]);
       setLevelRank((data.levelRank) || "2");
       setHands(data.hands || {});
+      if (Array.isArray(data.finish_order) && data.finish_order.length > 0) {
+        setFinishOrder(data.finish_order);
+      }
+
+
       if (lobbyInfoRef.current) {
         const username = lobbyInfoRef.current.username;
         if (data.hands && data.hands[username]) {
@@ -280,8 +294,45 @@ export default function App() {
       }
     });
 
+    s.on("hand_over", (data) => {
+      console.log("[HAND OVER]", data);
+      setHandOverInfo(data.result);  // contains { levels, win_type, winning_team, ... }
+      setGamePhase("hand_over");     // You can render a summary screen in this state
+    });
+
+    // ---- Round End
+    // === Round end handlers ===
+   s.on("round_summary", ({ roomId, finishOrder, result }) => {
+      console.log("[ROUND SUMMARY]", finishOrder, result);
+
+      setLevels(result.levels || {});
+      setFinishOrder(finishOrder || []);
+      setTeams(result.teams || [[], []]);
+      setSlots(result.slots || [null, null, null, null]);
+
+      // ✅ Update dropdown values to reflect actual levels
+      if (result.levels && slots.length === 4) {
+        const newStartingLevels = slots.map(player => result.levels[player] || "2");
+        setStartingLevels(newStartingLevels);
+      }
+
+      setGamePhase("lobby");
+    });
+
+
+
+    // === Tribute handlers ===
+    s.on("tribute_start", (data) => setTributeState(data));
+    s.on("tribute_update", (data) => setTributeState(data.tribute_state));
+    s.on("tribute_prompt_return", (data) => setTributeState(data.tribute_state));
+    s.on("tribute_complete", (data) => {
+      setTributeState(null);
+      setHands(data.hands || {});
+    });
+
     // ---- Game End
     s.on("game_over", data => {
+      console.log("[game_over]", data);
       setGameOverInfo(data);
       setCurrentPlayer(null);
       setCurrentPlay(null);
@@ -301,6 +352,7 @@ export default function App() {
 
     // ---- Error messages
     s.on("error_msg", msg => { setErrorMsg(msg); alert(msg); });
+
 
     return () => { s.disconnect(); };
     // eslint-disable-next-line
@@ -337,10 +389,20 @@ export default function App() {
     if (!socket || !lobbyInfo) return;
     const { roomId, username } = lobbyInfo;
     if (selectedCards.length === 0) return;
-    socket.emit("play_cards", { roomId, username, cards: selectedCards });
-    setHandOrder(handOrder.filter(card => !selectedCards.includes(card))); // Remove played cards from order
+    // Send the actual selected card values in order, using idx for accuracy
+    socket.emit("play_cards", {
+      roomId,
+      username,
+      cards: selectedCards.map(sel => handOrder[sel.idx]) // or sel.card if your backend expects only card names
+    });
+    setHandOrder(
+      handOrder.filter((_, idx) =>
+        !selectedCards.some(sel => sel.idx === idx)
+      )
+    );
     setSelectedCards([]);
   };
+
   const passTurn = () => {
     if (!socket || !lobbyInfo) return;
     const { roomId, username } = lobbyInfo;
@@ -452,6 +514,16 @@ export default function App() {
     return (
       <div style={{ textAlign: "center", marginTop: "2rem" }}>
       {renderErrorBanner()}
+      {/* Tribute overlay appears for all players when tributeState is set */}
+      {tributeState && (
+        <TributeOverlay
+          tributeState={tributeState}
+          setTributeState={setTributeState}
+          socket={socket}
+          playerName={lobbyInfo?.username}
+          hands={hands}
+        />
+      )}
         <h2>Game Over!</h2>
         <div style={{ margin: "1rem 0" }}>
           <strong>Trump Suit:</strong>{" "}
@@ -463,6 +535,7 @@ export default function App() {
           {" | "}
           <strong>Wild:</strong> <span style={{ color: "#9e3ad7" }}>{gameWilds ? "Leading Team's Level" : "None"}</span>
         </div>
+        
         <div style={{ fontSize: 20, margin: "1rem 0" }}>
           <strong>Result:</strong>{" "}
           {win_type
@@ -481,6 +554,7 @@ export default function App() {
             : null
           }
         </div>
+        
         <div>
           <strong>Teams:</strong>{" "}
           <span style={{ color: "#1976d2" }}>
@@ -708,10 +782,20 @@ export default function App() {
       ? LEVEL_SEQUENCE[Math.min(...teams[1].map(p => LEVEL_SEQUENCE.indexOf(levels[p] || "2")))]
       : "-";
 
-    console.log("hands object:", hands);
-    console.log("playerHand:", playerHand);
-    console.log("handOrder:", handOrder);
-    console.log('settings.highlightWilds in render:', settings.highlightWilds);
+    // === If tributeState is active, show the overlay and block all game UI ===
+    if (tributeState) {
+      return (
+        <>
+          <TributeOverlay
+            tributeState={tributeState}
+            setTributeState={setTributeState}
+            socket={socket}
+            playerName={lobbyInfo?.username}
+            hands={hands}
+          />
+        </>
+      );
+    }
 
     return (
       <div style={{ 
@@ -773,7 +857,11 @@ export default function App() {
               const isCurrent = player === lobbyInfo.username;
               let statusCell = "";
               if (player) {
-                if (currentPlayer) {
+                if (finishOrder && finishOrder.includes(player)) {
+                  const placement = finishOrder.indexOf(player);
+                  const placeText = ["🥇 1st", "🥈 2nd", "🥉 3rd", "4th"][placement];
+                  statusCell = <span style={{ color: "#4b0082", fontWeight: "bold" }}>{placeText}</span>;
+                } else if (currentPlayer) {
                   if (passedPlayers.includes(player)) {
                     statusCell = <span style={{ color: "#ad0000" }}>⏸️ Passed</span>;
                   } else if (player === currentPlayer) {
@@ -1067,10 +1155,13 @@ export default function App() {
               }}
             >
               {handOrder.map((card, idx) => {
-                const isSelected = selectedCards.includes(card);
+                const cardKey = `${card}-${idx}`;
+                const isSelected = selectedCards.some(
+                  sel => sel.card === card && sel.idx === idx
+                );
                 return (
                   <SortableCard
-                    key={card + idx}
+                    key={cardKey}
                     card={card}
                     idx={idx}
                     trumpSuit={trumpSuit}
@@ -1081,9 +1172,11 @@ export default function App() {
                     isSelected={isSelected}
                     onClick={() => {
                       if (!isSelected) {
-                        setSelectedCards([...selectedCards, card]);
+                        setSelectedCards([...selectedCards, { card, idx }]);
                       } else {
-                        setSelectedCards(selectedCards.filter(c => c !== card));
+                        setSelectedCards(selectedCards.filter(
+                          sel => !(sel.card === card && sel.idx === idx)
+                        ));
                       }
                     }}
                     style={{
@@ -1160,8 +1253,6 @@ export default function App() {
           </div>
         )}
 
-
-        
         {!yourTurn && !canEndRound && (
           <p style={{ margin: "18px 0 32px 0" }}>
             Waiting for <strong>{currentPlayer}</strong> to play...
@@ -1176,7 +1267,7 @@ export default function App() {
     <div>
       <h1 style={{ textAlign: "center" }}>Guan Dan Web Game</h1>
       <h3 style={{ textAlign: "center", color: connected ? "green" : "red" }}>
-        Socket.IO: {connected ? "Connected" : "Disconnected"}
+        Server Status: {connected ? "🟢 Connected" : "🔴 Disconnected"}
       </h3>
       <CreateJoinRoom onCreateRoom={handleCreateRoom} onJoinRoom={handleJoinRoom} />
     </div>
@@ -1298,5 +1389,64 @@ function CardImg({ card, trumpSuit, levelRank, wildCards, onClick, highlightWild
     />
   );
 }
+
+function TributeOverlay({ tributeState, setTributeState, socket, playerName, hands }) {
+  if (!tributeState) return null;
+  const { tributes, tribute_cards = {}, exchange_cards = {}, step } = tributeState;
+  const myHand = hands && playerName ? hands[playerName] : [];
+
+  // Tribute payment step
+  if (step === 'pay') {
+    const myTribute = tributes && tributes.find(t => t.from === playerName);
+    if (myTribute && !tribute_cards[playerName]) {
+      return (
+        <div className="tribute-modal">
+          <h3>You must pay tribute to {myTribute.to}</h3>
+          <p>Select your highest card that is not a wild (see rules)</p>
+          <div>
+            {myHand.map(card => (
+              <button key={card} onClick={() => {
+                socket.emit('pay_tribute', { roomId: tributeState.roomId, from: playerName, card });
+              }}>{card}</button>
+            ))}
+          </div>
+        </div>
+      );
+    } else {
+      return <div className="tribute-modal">Waiting for all tributes...</div>;
+    }
+  }
+
+  // Return step (winners return a card to the tribute-payer)
+  if (step === 'return') {
+    const myReturn = tributes && tributes.find(t => t.to === playerName);
+    if (myReturn && !exchange_cards[playerName]) {
+      return (
+        <div className="tribute-modal">
+          <h3>You must return a card to {myReturn.from}</h3>
+          <p>Select any card (not the one just received from tribute)</p>
+          <div>
+            {myHand.map(card => (
+              <button key={card} onClick={() => {
+                socket.emit('return_tribute', { roomId: tributeState.roomId, from: playerName, to: myReturn.from, card });
+              }}>{card}</button>
+            ))}
+          </div>
+        </div>
+      );
+    } else {
+      return <div className="tribute-modal">Waiting for all tribute returns...</div>;
+    }
+  }
+
+  // Done
+  if (step === 'done') {
+    return <div className="tribute-modal">Tribute complete! Dealing new cards...</div>;
+  }
+
+  // Default
+  return null;
+}
+
 
 
