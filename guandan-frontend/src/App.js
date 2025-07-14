@@ -18,6 +18,17 @@ import {
 } from '@dnd-kit/sortable';
 import {CSS} from '@dnd-kit/utilities';
 
+// ---- default settings ----
+const DEFAULT_SETTINGS = {
+  cardBack: "red",
+  wildCards: true,
+  trumpSuit: "hearts",
+  startingLevels: ["2", "2", "2", "2"],
+  showCardCount: false,
+  highlightWilds: false
+};
+
+
 // ---- Card mapping helpers ----
 const CARD_RANK_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2', 'JoB', 'JoR'];
 const SUITS = ["hearts", "spades", "clubs", "diamonds"];
@@ -118,6 +129,7 @@ function SortableCard({ card, idx, ...props }) {
 }
 
 
+
 // ================= MAIN APP ===================
 export default function App() {
   // Core game/lobby state
@@ -137,7 +149,7 @@ export default function App() {
   const [levels, setLevels] = useState({});
   const [teams, setTeams] = useState([[], []]);
   const [slots, setSlots] = useState([null, null, null, null]);
-  const [settings, setSettings] = useState({ cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2", "2", "2", "2"], showCardCount: false });
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [levelRank, setLevelRank] = useState("2");
   const [wildCards, setWildCards] = useState(true); // default is now true!
   const [trumpSuit, setTrumpSuit] = useState("hearts");
@@ -146,9 +158,20 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState("");
   const [handOrder, setHandOrder] = useState([]);
   
+
+  // Store last hand length to detect when new cards are dealt
+  const prevHandLength = useRef(0);
   useEffect(() => {
-    setHandOrder(playerHand || []);
-  }, [playerHand]);
+    // Only reset handOrder when a NEW hand is dealt (length increases)
+    if (playerHand.length > 0 && playerHand.length !== prevHandLength.current) {
+      // Sort the new hand by rank for first deal, or whatever order you want
+      setHandOrder([...playerHand].sort((a, b) => cardSortKey(a, levelRank) - cardSortKey(b, levelRank)));
+      prevHandLength.current = playerHand.length;
+    }
+    // If playerHand is emptied, reset prevHandLength
+    if (playerHand.length === 0) prevHandLength.current = 0;
+    // eslint-disable-next-line
+  }, [playerHand, levelRank]);
 
   // Keep lobbyInfo ref updated
   useEffect(() => { lobbyInfoRef.current = lobbyInfo; }, [lobbyInfo]);
@@ -176,7 +199,7 @@ export default function App() {
       setLevels(data.levels || {});
       setTeams(data.teams || [[], []]);
       setSlots(data.slots || [null, null, null, null]);
-      setSettings(data.settings || { cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+      setSettings({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
       setWildCards((data.settings && typeof data.settings.wildCards === "boolean") ? data.settings.wildCards : true);
       setTrumpSuit((data.settings && data.settings.trumpSuit) || "hearts");
       setStartingLevels((data.settings && data.settings.startingLevels) || ["2","2","2","2"]);
@@ -195,7 +218,7 @@ export default function App() {
       setLevels(data.levels || {});
       setTeams(data.teams || [[], []]);
       setSlots(data.slots || [null, null, null, null]);
-      setSettings(data.settings || { cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+      setSettings({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
       setWildCards((data.settings && typeof data.settings.wildCards === "boolean") ? data.settings.wildCards : true);
       setTrumpSuit((data.settings && data.settings.trumpSuit) || "hearts");
       setStartingLevels((data.settings && data.settings.startingLevels) || ["2","2","2","2"]);
@@ -225,7 +248,7 @@ export default function App() {
       setLevels(data.levels || {});
       setTeams(data.teams || [[], []]);
       setSlots(data.slots || [null, null, null, null]);
-      setSettings(data.settings || { cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+      setSettings({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
       setWildCards((typeof data.wildCards === "boolean") ? data.wildCards : true);
       setTrumpSuit((data.trumpSuit) || "hearts");
       setStartingLevels((data.startingLevels) || ["2","2","2","2"]);
@@ -243,7 +266,7 @@ export default function App() {
       setLevels(data.levels || {});
       setTeams(data.teams || [[], []]);
       setSlots(data.slots || [null, null, null, null]);
-      setSettings(data.settings || { cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+      setSettings({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
       setWildCards((typeof data.wildCards === "boolean") ? data.wildCards : true);
       setTrumpSuit((data.trumpSuit) || "hearts");
       setStartingLevels((data.startingLevels) || ["2","2","2","2"]);
@@ -268,7 +291,7 @@ export default function App() {
       setLevels(data.levels || {});
       setTeams(data.teams || [[], []]);
       setSlots(data.slots || [null, null, null, null]);
-      setSettings(data.settings || { cardBack: "red", wildCards: true, trumpSuit: "hearts", startingLevels: ["2","2","2","2"] });
+      setSettings({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
       setWildCards((typeof data.wildCards === "boolean") ? data.wildCards : true);
       setTrumpSuit((data.trumpSuit) || "hearts");
       setStartingLevels((data.startingLevels) || ["2","2","2","2"]);
@@ -315,7 +338,7 @@ export default function App() {
     const { roomId, username } = lobbyInfo;
     if (selectedCards.length === 0) return;
     socket.emit("play_cards", { roomId, username, cards: selectedCards });
-    setHandOrder(handOrder.filter(card => !selectedCards.includes(card)));
+    setHandOrder(handOrder.filter(card => !selectedCards.includes(card))); // Remove played cards from order
     setSelectedCards([]);
   };
   const passTurn = () => {
@@ -335,7 +358,7 @@ export default function App() {
     if (!socket || !lobbyInfo) return;
     setTrumpSuit(suit);
     const newSettings = { ...settings, trumpSuit: suit };
-    setSettings(newSettings);
+    setSettings({ ...DEFAULT_SETTINGS, ...newSettings });
     socket.emit("update_room_settings", {
       roomId: lobbyInfo.roomId,
       settings: newSettings
@@ -345,7 +368,7 @@ export default function App() {
     if (!socket || !lobbyInfo) return;
     setWildCards(enabled);
     const newSettings = { ...settings, wildCards: enabled };
-    setSettings(newSettings);
+    setSettings({ ...DEFAULT_SETTINGS, ...newSettings });
     socket.emit("update_room_settings", {
       roomId: lobbyInfo.roomId,
       settings: newSettings
@@ -357,7 +380,7 @@ export default function App() {
     updated[slotIdx] = newLevel;
     setStartingLevels(updated);
     const newSettings = { ...settings, startingLevels: updated };
-    setSettings(newSettings);
+    setSettings({ ...DEFAULT_SETTINGS, ...newSettings });
     socket.emit("update_room_settings", {
       roomId: lobbyInfo.roomId,
       settings: newSettings
@@ -372,7 +395,7 @@ export default function App() {
   const handleChangeCardBack = (color) => {
     if (!socket || !lobbyInfo) return;
     const newSettings = { ...settings, cardBack: color };
-    setSettings(newSettings);
+    setSettings({ ...DEFAULT_SETTINGS, ...newSettings });
     socket.emit("update_room_settings", {
       roomId: lobbyInfo.roomId,
       settings: newSettings
@@ -382,10 +405,20 @@ export default function App() {
   const handleChangeShowCardCount = (enabled) => {
     if (!socket || !lobbyInfo) return;
     const newSettings = { ...settings, showCardCount: enabled };
-    setSettings(newSettings);
+    setSettings({ ...DEFAULT_SETTINGS, ...newSettings });
     socket.emit("update_room_settings", {
       roomId: lobbyInfo.roomId,
       settings: newSettings
+    });
+  };
+
+  const handleChangeHighlightWilds = (enabled) => {
+    if (!socket || !lobbyInfo) return;
+    const newSettings = { ...settings, highlightWilds: enabled };
+    setSettings({ ...DEFAULT_SETTINGS, ...newSettings });
+    socket.emit("update_room_settings", {
+      roomId: lobbyInfo.roomId,
+      settings: newSettings,
     });
   };
 
@@ -477,6 +510,7 @@ export default function App() {
             </li>
           ))}
         </ol>
+
         <h3>Final Hands</h3>
         <ul style={{ listStyle: "none", padding: 0 }}>
           {slots.map((player, idx) =>
@@ -528,6 +562,9 @@ export default function App() {
     const { roomId, username, readyStates = {} } = lobbyInfo;
     const isCreator = slots[0] === username;
     const allReady = slots.filter(Boolean).every(player => readyStates[player]);
+
+    console.log("settings.highlightWilds in App:", settings.highlightWilds);
+
     return (
 
       /* Card Back & Show Card Counter */
@@ -563,9 +600,20 @@ export default function App() {
           </span>
         </div>
 
-        {/* Card Back & Show Card Counter */}
-        <div style={{ marginTop: 14, marginBottom: 10 }}>
-          <span style={{ marginRight: 30 }}>
+        {/* Card Back, Show Card Counter, Highlight Wilds -- ALL TOGETHER! */}
+        <div
+          style={{
+            marginTop: 14,
+            marginBottom: 10,
+            display: "flex",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 26,
+            justifyContent: "center"
+          }}
+        >
+          {/* Card Back */}
+          <span>
             <strong>Card Back:</strong>{" "}
             {isCreator ? (
               <select
@@ -582,6 +630,7 @@ export default function App() {
               </span>
             )}
           </span>
+          {/* Show Card Count */}
           <span>
             <strong>Show Opponent Card Counter:</strong>{" "}
             {isCreator ? (
@@ -597,9 +646,23 @@ export default function App() {
               </span>
             )}
           </span>
+          {/* Highlight Wilds */}
+          <span>
+            <strong>Highlight Wild Cards in Hand:</strong>{" "}
+            {isCreator ? (
+              <input
+                type="checkbox"
+                checked={!!settings.highlightWilds}
+                onChange={e => handleChangeHighlightWilds(e.target.checked)}
+                style={{ transform: "scale(1.4)", marginLeft: 7, marginRight: 2 }}
+              />
+            ) : (
+              <span style={{ color: "#7d39b3", fontWeight: "bold", marginLeft: 5 }}>
+                {settings.highlightWilds ? "On" : "Off"}
+              </span>
+            )}
+          </span>
         </div>
-
-
 
         <div style={{ display: "flex", justifyContent: "center", gap: "6rem", margin: "1.6rem 0" }}>
           <TeamColumn team="A" slotIndices={[0,2]} slots={slots} yourName={username}
@@ -648,6 +711,7 @@ export default function App() {
     console.log("hands object:", hands);
     console.log("playerHand:", playerHand);
     console.log("handOrder:", handOrder);
+    console.log('settings.highlightWilds in render:', settings.highlightWilds);
 
     return (
       <div style={{ 
@@ -655,10 +719,11 @@ export default function App() {
           maxWidth: 700,
           margin: "0 auto",
           padding: "0 18px",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "stretch" 
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "stretch" 
         }}>
+
         {/* Game Info Bar */}
         <div style={{ marginBottom: 8, fontWeight: 600 }}>
           Trump Suit: <span style={{ color: SUIT_COLORS[trumpSuit], fontWeight: "bold" }}>
@@ -671,6 +736,7 @@ export default function App() {
             {wildCards ? "Leading Team's Level" : "None"}
           </span>
         </div>
+        
         {/* Team Status */}
         <div style={{ marginBottom: 10 }}>
           <strong>Team A Level:</strong>{" "}
@@ -894,8 +960,8 @@ export default function App() {
                     trumpSuit={trumpSuit}
                     levelRank={levelRank}
                     wildCards={wildCards}
-                    highlightWild
-                    highlightTrump
+                    highlightWild={true}
+                    highlightTrump={false}
                     style={{
                       width: "min(max(7vw,50px),92px)",   // Scales 50–92px based on vw
                       height: "min(max(9vw,72px),130px)", // Scales 72–130px based on vw
@@ -939,11 +1005,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* === Your hand: single-row, overlapped, horizontally scrollable, selectable === */}
-        <h3>Your hand:</h3>
-
         {/* === DRAG & DROP PLAYER HAND === */}
-
+        <h3>Your hand:</h3>
         <DndContext
           sensors={sensors} // <-- use the sensors variable created at top-level, never in JSX!
           collisionDetection={closestCenter}
@@ -989,8 +1052,9 @@ export default function App() {
                     trumpSuit={trumpSuit}
                     levelRank={levelRank}
                     wildCards={wildCards}
-                    highlightWild
-                    highlightTrump
+                    highlightWild={!!settings.highlightWilds}
+                    highlightTrump={false}
+                    isSelected={isSelected}
                     onClick={() => {
                       if (!isSelected) {
                         setSelectedCards([...selectedCards, card]);
@@ -1001,7 +1065,6 @@ export default function App() {
                     style={{
                       width: 50,
                       height: 70,
-                      border: isSelected ? "3px solid #005fff" : "1px solid #222",
                       borderRadius: 6,
                       cursor: "pointer",
                       userSelect: "none",
@@ -1176,31 +1239,36 @@ function LobbySeat({ idx, player, yourName, isCreator, startingLevel, onMove, on
 }
 
 // --- CardImg: Renders a single card face or (optionally) highlights trump/wild ---
-function CardImg({ card, trumpSuit, levelRank, wildCards, onClick, highlightWild, highlightTrump, style }) {
-  if (!card || typeof card !== "string") return null;
-  const isJoker = card === "JoB" || card === "JoR";
-  const suit = getCardSuit(card);
-  const rank = getCardRank(card);
+function CardImg({ card, trumpSuit, levelRank, wildCards, onClick, highlightWild, style, isSelected }) {
   const wild = isWild(card, levelRank, trumpSuit, wildCards);
-  const trump = isTrump(card, levelRank, trumpSuit, wildCards);
+  let borderStyle;
+  if (isSelected) {
+    borderStyle = "3px solid #005fff";
+  } else if (highlightWild && wild) {
+    borderStyle = "3px solid #9e3ad7";
+  } else {
+    borderStyle = "1.5px solid #aaa";
+  }
+
   return (
     <img
       src={process.env.PUBLIC_URL + `/cards/${card}.svg`}
       alt={card}
       onClick={onClick}
       style={{
-        border: highlightWild && wild ? "3px solid #9e3ad7" :
-                highlightTrump && trump ? "2.5px solid #c62a41" : "1px solid #aaa",
-        borderRadius: 6,
-        boxShadow: wild ? "0 0 9px #9e3ad7" :
-                  trump ? "0 0 7px #c62a41" : undefined,
-        background: isJoker ? "#f6f5ee" : "#fff",
+        border: borderStyle,
+        background: highlightWild && wild ? "#f8eafd" : (card === "JoB" || card === "JoR") ? "#f6f5ee" : "#fff",
+        borderRadius: 10,
+        boxShadow: isSelected
+          ? "0 0 8px #005fff88"
+          : highlightWild && wild
+          ? "0 0 18px #9e3ad7"
+          : undefined,
         ...style
       }}
-      title={
-        wild ? "Wild Card" :
-        trump ? "Trump Card" : ""
-      }
+      title={wild ? "Wild Card" : ""}
     />
   );
 }
+
+

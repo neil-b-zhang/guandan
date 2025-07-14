@@ -173,7 +173,7 @@ def handle_update_room_settings(data):
     new_settings = data.get('settings', {})
     if room_id not in rooms:
         return
-    for k in ["wildCards", "cardBack", "trumpSuit", "startingLevels", "showCardCount"]:
+    for k in ["wildCards", "cardBack", "trumpSuit", "startingLevels", "showCardCount", "highlightWilds"]:
         if k in new_settings:
             rooms[room_id]["settings"][k] = new_settings[k]
     broadcast_room_update(room_id)
@@ -312,8 +312,9 @@ def handle_play_cards(data):
         emit('error_msg', "Not your turn!", room=request.sid)
         return
 
-    player_hand = rooms[room_id]['hands'][username]
+    player_hand = rooms[room_id]['hands'][username][:]  # work with a *copy* for safety
 
+    # (1) Validate hand type
     this_type = hand_type(
         cards,
         level_rank=game.get('levelRank'),
@@ -324,6 +325,7 @@ def handle_play_cards(data):
         emit('error_msg', "Invalid hand type!", room=request.sid)
         return
 
+    # (2) Validate that play beats last play, if needed
     last_play = game['current_play']
     if last_play and last_play['cards']:
         if not beats(
@@ -336,6 +338,7 @@ def handle_play_cards(data):
             emit('error_msg', "Your play must beat the previous hand.", room=request.sid)
             return
 
+    # (3) Remove cards from player_hand (NOW it's safe)
     for card in cards:
         if card in player_hand:
             player_hand.remove(card)
@@ -350,6 +353,9 @@ def handle_play_cards(data):
                 if w in player_hand:
                     player_hand.remove(w)
                     break
+
+    # Write the updated hand back
+    rooms[room_id]['hands'][username] = player_hand
 
     if len(player_hand) == 0:
         game['finish_order'].append(username)
