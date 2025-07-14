@@ -1,12 +1,8 @@
-// guandan-frontend/src/CreateJoinRoom.js
-
 import React, { useState } from "react";
 
 function CreateJoinRoom({ onCreateRoom, onJoinRoom }) {
   const [username, setUsername] = useState("");
   const [roomId, setRoomId] = useState("");
-  const [cardBack, setCardBack] = useState("red");
-  const [wildCards, setWildCards] = useState(true);
 
   return (
     <div style={{ textAlign: "center", marginTop: "4rem" }}>
@@ -20,29 +16,11 @@ function CreateJoinRoom({ onCreateRoom, onJoinRoom }) {
           style={{ padding: 8, fontSize: 16, marginBottom: 10 }}
         />
         <br />
-        <h3>Create a Room</h3>
-        <label>
-          Card back color:&nbsp;
-          <select value={cardBack} onChange={e => setCardBack(e.target.value)}>
-            <option value="red">Red</option>
-            <option value="black">Black</option>
-          </select>
-        </label>
-        <br />
-        <label>
-          <input
-            type="checkbox"
-            checked={wildCards}
-            onChange={e => setWildCards(e.target.checked)}
-          />
-          &nbsp;Include wild card mechanics
-        </label>
-        <br />
         <button
           style={{ marginTop: 10, padding: "8px 20px", fontSize: 16 }}
           onClick={() => {
             if (username.trim()) {
-              onCreateRoom({ username, cardBack, wildCards });
+              onCreateRoom({ username });
             } else {
               alert("Please enter your name.");
             }
