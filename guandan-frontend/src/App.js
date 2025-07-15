@@ -161,9 +161,9 @@ export default function App() {
   const [finishOrder, setFinishOrder] = useState([]);
   const [gamePhase, setGamePhase] = useState("lobby"); // "lobby" | "game" | "hand_over"
   const [handOverInfo, setHandOverInfo] = useState(null);
-
   // Store last hand length to detect when new cards are dealt
   const prevHandLength = useRef(0);
+
   useEffect(() => {
     // Only reset handOrder when a NEW hand is dealt (length increases)
     if (playerHand.length > 0 && playerHand.length !== prevHandLength.current) {
@@ -178,6 +178,14 @@ export default function App() {
 
   // Keep lobbyInfo ref updated
   useEffect(() => { lobbyInfoRef.current = lobbyInfo; }, [lobbyInfo]);
+
+  // Sync dropdown levels when slots and levels are populated
+  useEffect(() => {
+    if (slots.every(p => p !== null) && Object.keys(levels).length > 0) {
+      const newStartingLevels = slots.map(player => levels[player] || "2");
+      setStartingLevels(newStartingLevels);
+    }
+  }, [slots, levels]);
 
   // ---- SOCKET CONNECTION + EVENT HANDLERS ----
   useEffect(() => {
@@ -302,23 +310,31 @@ export default function App() {
 
     // ---- Round End
     // === Round end handlers ===
-   s.on("round_summary", ({ roomId, finishOrder, result }) => {
-      console.log("[ROUND SUMMARY]", finishOrder, result);
+    s.on("round_summary", ({ roomId, finishOrder, result }) => {
+      console.log("[ROUND SUMMARY] Room:", roomId);
+      console.log("  Finish Order:", finishOrder);
+      console.log("  Result Object:", result);
+      console.log("  Result.slots:", result.slots);
+      console.log("  Result.levels:", result.levels);
 
       setLevels(result.levels || {});
       setFinishOrder(finishOrder || []);
       setTeams(result.teams || [[], []]);
-      setSlots(result.slots || [null, null, null, null]);
 
-      // ✅ Update dropdown values to reflect actual levels
-      if (result.levels && slots.length === 4) {
-        const newStartingLevels = slots.map(player => result.levels[player] || "2");
+      const updatedSlots = result.slots || [null, null, null, null];
+      console.log("  Updating slots to:", updatedSlots);
+      setSlots(updatedSlots);
+
+      if (result.levels && updatedSlots.length === 4) {
+        const newStartingLevels = updatedSlots.map(player => result.levels[player] || "2");
+        console.log("  Derived startingLevels:", newStartingLevels);
         setStartingLevels(newStartingLevels);
+      } else {
+        console.warn("  Skipping level update due to missing slot info or levels");
       }
 
       setGamePhase("lobby");
     });
-
 
 
     // === Tribute handlers ===

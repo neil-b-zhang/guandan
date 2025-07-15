@@ -862,6 +862,8 @@ def handle_end_of_hand(room_id, play_type_label):
     result = handle_end_of_round(room)
     print(f"[ROUND RESULT] Win type: {room.get('win_type')}, Declarer team: {room.get('winning_team')}, Levels: {room['levels']}")
 
+    result["slots"] = rooms[room_id].get("slots", [None, None, None, None])
+    print("[ROUND SUMMARY] Sending to frontend:", result)
     emit("round_summary", {
         "roomId": room_id,
         "finishOrder": finish_order,
