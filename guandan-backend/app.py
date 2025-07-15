@@ -864,6 +864,18 @@ def handle_end_of_hand(room_id, play_type_label):
 
     result["slots"] = rooms[room_id].get("slots", [None, None, None, None])
     print("[ROUND SUMMARY] Sending to frontend:", result)
+
+    # Compute level being played = min level of winning team
+    team_levels = [int(game["levels"].get(p, 2)) for p in game["teams"][0]]
+    level_rank = min(team_levels)
+
+    # Round number = count of hands played so far
+    # Add a counter if it doesn't exist
+    game["round_number"] = game.get("round_number", 1) + 1
+
+    result["round_number"] = game["round_number"]
+    result["level_rank"] = str(level_rank)
+    
     emit("round_summary", {
         "roomId": room_id,
         "finishOrder": finish_order,

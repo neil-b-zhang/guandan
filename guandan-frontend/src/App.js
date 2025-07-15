@@ -163,6 +163,9 @@ export default function App() {
   const [handOverInfo, setHandOverInfo] = useState(null);
   // Store last hand length to detect when new cards are dealt
   const prevHandLength = useRef(0);
+  const [roundNumber, setRoundNumber] = useState(1);
+  const [currentLevelRank, setCurrentLevelRank] = useState("2");
+
 
   useEffect(() => {
     // Only reset handOrder when a NEW hand is dealt (length increases)
@@ -332,6 +335,8 @@ export default function App() {
       } else {
         console.warn("  Skipping level update due to missing slot info or levels");
       }
+      if (result.round_number) setRoundNumber(result.round_number);
+      if (result.level_rank) setCurrentLevelRank(result.level_rank);
 
       setGamePhase("lobby");
     });
@@ -753,6 +758,12 @@ export default function App() {
             )}
           </span>
         </div>
+
+        <h3 style={{ color: "#5c6bc0" }}> </h3>
+        <p style={{ marginBottom: 10 }}>
+          <strong>Round:</strong> {roundNumber} | <strong>Level being played:</strong> <span style={{ color: "#ea6700" }}>{currentLevelRank}</span>
+        </p>
+
 
         <div style={{ display: "flex", justifyContent: "center", gap: "6rem", margin: "1.6rem 0" }}>
           <TeamColumn team="A" slotIndices={[0,2]} slots={slots} yourName={username}
