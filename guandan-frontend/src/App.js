@@ -343,7 +343,10 @@ export default function App() {
 
 
     // === Tribute handlers ===
-    s.on("tribute_start", (data) => setTributeState(data));
+    s.on("tribute_start", (data) => {
+      console.log("[FRONTEND] Tribute phase begins:", data);
+      setTributeState(data)
+    });
     s.on("tribute_update", (data) => setTributeState(data.tribute_state));
     s.on("tribute_prompt_return", (data) => setTributeState(data.tribute_state));
     s.on("tribute_complete", (data) => {

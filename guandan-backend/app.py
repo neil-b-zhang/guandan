@@ -15,6 +15,7 @@ from game.rooms import (
 from game.deck import create_deck, shuffle_deck, deal_cards
 from game.hands import hand_type, beats, find_wilds
 import logging
+from collections import defaultdict
 
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
@@ -182,42 +183,62 @@ def handle_end_of_round(room):
         "ace_attempts": dict(ace_attempts)
     }
 
-
 def determine_tributes(room):
-    """
-    Returns a list of tribute actions needed for the new round.
-    Each tribute is a dict: {from: player_loser, to: player_winner}
-    """
-    finish_order = room['game']['finish_order']
-    slots = room['slots']
-    teams = room['teams']
-    teamA, teamB = teams
+    finish_order = room.get('game', {}).get('finish_order', [])
+    teams = room.get('teams', [[], []])
+    if len(finish_order) < 2:
+        return None
 
-    # Which team won?
     first = finish_order[0]
-    winners = teamA if first in teamA else teamB
-    losers = teamB if first in teamA else teamA
+    second = finish_order[1] if len(finish_order) > 1 else None
+    last = finish_order[-1]
+    second_last = finish_order[-2] if len(finish_order) > 2 else None
 
-    # Order finishers by placement
-    win_indices = [finish_order.index(p) for p in winners]
-    win_indices.sort()
-    if win_indices == [0, 1]:  # 1-2 win
-        # Last two in finish_order pay tribute to first two
-        return [
-            {"from": finish_order[2], "to": finish_order[0]},
-            {"from": finish_order[3], "to": finish_order[1]},
-        ]
-    elif win_indices == [0, 2]:  # 1-3 win
-        # Last in finish_order pays tribute to first
-        return [
-            {"from": finish_order[3], "to": finish_order[0]},
-        ]
-    elif win_indices == [0, 3]:  # 1-4 win
-        # Last in finish_order pays tribute to first
-        return [
-            {"from": finish_order[2], "to": finish_order[0]},  # Only one tribute
-        ]
-    return []  # No tribute if opponents win
+    teamA = set(teams[0])
+    teamB = set(teams[1])
+
+    tribute_info = []
+    blockable = False
+
+    if first in teamA and second in teamA:
+        tribute_info.append({'from': last, 'to': first})
+        tribute_info.append({'from': second_last, 'to': second})
+        blockable = True
+    elif first in teamA and last in teamB:
+        tribute_info.append({'from': last, 'to': first})
+        blockable = True
+    elif first in teamA and last in teamA:
+        tribute_info.append({'from': last, 'to': first})
+        blockable = True
+
+    return {
+        'tributes': tribute_info,
+        'blockable': blockable,
+        'step': 'pay',
+        'tribute_cards': {},
+        'exchange_cards': {}
+    }
+
+def deal_to_all_players(room_id):
+    room = rooms[room_id]
+    for username in room['players']:
+        player_hand = room['hands'].get(username)
+        if player_hand:
+            socketio.emit('deal_hand', {
+                'username': username,
+                'hand': player_hand
+            }, to=room['sids'][username])  # emits to correct player
+    room['dealt_players'] = set(room['players'])  # simulate all dealt
+
+    print(f"[DEBUG] Dealt to all players. Game round: {room['game'].get('round_number', '?')}")
+    print(f"[DEBUG] Finish order from last round: {room['game'].get('finish_order')}")
+
+    tribute = determine_tributes(room)
+    if tribute:
+        room['tribute_state'] = tribute
+        print(f"[TRIBUTE] Starting tribute phase for room {room_id}")
+        print(f"  Tribute info: {tribute}")
+        socketio.emit('tribute_start', tribute, room=room_id)
 
 
 def initial_slots():
@@ -431,6 +452,36 @@ def handle_start_game(data):
     # Determine trump/level for new round: use the winning team's level if present,
     # otherwise use starting levels from settings.
     start_new_game_round(room_id)
+
+@socketio.on('deal_hand')
+def handle_deal_hand(data):
+    room_id = data['roomId']
+    username = data['username']
+    room = rooms.get(room_id)
+    if not room:
+        return
+
+    player_hand = room.get('hands', {}).get(username)
+    if player_hand:
+        socketio.emit('deal_hand', {
+            'username': username,
+            'hand': player_hand
+        }, room=request.sid)
+
+    if 'dealt_players' not in room:
+        room['dealt_players'] = set()
+    room['dealt_players'].add(username)
+
+    if len(room['dealt_players']) == 4:
+        print(f"[DEBUG] Dealt to all players. Game round: {room['game'].get('round_number', '?')}")
+        print(f"[DEBUG] Finish order from last round: {room['game'].get('finish_order')}")
+
+        tribute = determine_tributes(room)
+        if tribute:
+            room['tribute_state'] = tribute
+            print(f"[TRIBUTE] Starting tribute phase for room {room_id}")
+            print(f"  Tribute info: {tribute}")
+            socketio.emit('tribute_start', tribute, room=room_id)
 
 def start_new_game_round(room_id):
     slots = rooms[room_id]["slots"]
@@ -751,71 +802,68 @@ def handle_end_round(data):
 
     emit('error_msg', "Only the current winner or their partner (if finished) can end the round", room=request.sid)
 
-
 @socketio.on('pay_tribute')
 def handle_pay_tribute(data):
     room_id = data['roomId']
     from_player = data['from']
     card = data['card']
-
-    tribute_state = rooms[room_id].get('tribute_state', {})
-    if from_player not in [t['from'] for t in tribute_state.get('tributes', [])]:
-        emit('error_msg', "You are not required to pay tribute.", room=request.sid)
+    room = rooms.get(room_id)
+    if not room:
         return
 
-    # Remove card from loser's hand
-    hand = rooms[room_id]['hands'][from_player]
-    if card not in hand:
-        emit('error_msg', "Card not found in hand.", room=request.sid)
+    tribute_state = room.get('tribute_state')
+    if not tribute_state:
         return
-    hand.remove(card)
+
     tribute_state['tribute_cards'][from_player] = card
 
-    emit('tribute_update', {'tribute_state': tribute_state}, room=room_id)
-
-    # When all tribute cards are submitted, prompt winners to select return
     if len(tribute_state['tribute_cards']) == len(tribute_state['tributes']):
-        emit('tribute_prompt_return', {'tribute_state': tribute_state}, room=room_id)
+        tribute_state['step'] = 'return'
+        socketio.emit('tribute_prompt_return', {'tribute_state': tribute_state}, room=room_id)
+    else:
+        socketio.emit('tribute_update', {'tribute_state': tribute_state}, room=room_id)
 
 @socketio.on('return_tribute')
 def handle_return_tribute(data):
     room_id = data['roomId']
-    to_player = data['to']     # The player receiving the return card (the loser)
-    from_player = data['from'] # The winner who is returning a card
+    from_player = data['from']
+    to_player = data['to']
     card = data['card']
-
-    tribute_state = rooms[room_id].get('tribute_state', {})
-    if from_player not in [t['to'] for t in tribute_state.get('tributes', [])]:
-        emit('error_msg', "You are not returning tribute.", room=request.sid)
+    room = rooms.get(room_id)
+    if not room:
         return
 
-    # Remove card from winner's hand and give to loser
-    hand = rooms[room_id]['hands'][from_player]
-    if card not in hand:
-        emit('error_msg', "Card not found in hand.", room=request.sid)
+    tribute_state = room.get('tribute_state')
+    if not tribute_state:
         return
-    # Card must not be the same as the one received as tribute
-    if card == tribute_state['tribute_cards'].get(to_player):
-        emit('error_msg', "You must return a different card.", room=request.sid)
-        return
-    hand.remove(card)
-    rooms[room_id]['hands'][to_player].append(card)
-    tribute_state['exchange_cards'][from_player] = card
 
-    emit('tribute_update', {'tribute_state': tribute_state}, room=room_id)
+    tribute_state['exchange_cards'][from_player] = {'to': to_player, 'card': card}
 
-    # When all returns are done, complete tribute and start next hand
     if len(tribute_state['exchange_cards']) == len(tribute_state['tributes']):
-        # Give tribute cards to the winners
-        for tribute in tribute_state['tributes']:
-            winner = tribute['to']
-            loser = tribute['from']
-            t_card = tribute_state['tribute_cards'][loser]
-            rooms[room_id]['hands'][winner].append(t_card)
-        tribute_state['pending'] = False
-        emit('tribute_complete', {'tribute_state': tribute_state, 'hands': rooms[room_id]['hands']}, room=room_id)
-        # After short delay (or user confirmation), deal new round
-        start_new_game_round(room_id)
+        tribute_state['step'] = 'done'
+        hands = room['hands']
+
+        for t in tribute_state['tributes']:
+            from_player = t['from']
+            to_player = t['to']
+            tribute_card = tribute_state['tribute_cards'][from_player]
+            return_card = tribute_state['exchange_cards'][to_player]['card']
+
+            if tribute_card == return_card:
+                continue
+
+            try:
+                hands[from_player].remove(tribute_card)
+                hands[to_player].remove(return_card)
+                hands[from_player].append(return_card)
+                hands[to_player].append(tribute_card)
+            except Exception as e:
+                print("[TRIBUTE] Card transfer error:", e)
+
+        socketio.emit('tribute_complete', {'tribute_state': tribute_state, 'hands': hands}, room=room_id)
+        room['tribute_state'] = None
+    else:
+        socketio.emit('tribute_update', {'tribute_state': tribute_state}, room=room_id)
 
 
 @socketio.on('connect')
@@ -866,7 +914,7 @@ def handle_end_of_hand(room_id, play_type_label):
     print("[ROUND SUMMARY] Sending to frontend:", result)
 
     # Compute level being played = min level of winning team
-    team_levels = [int(game["levels"].get(p, 2)) for p in game["teams"][0]]
+    team_levels = [int(room["levels"].get(p, 2)) for p in room["teams"][0]]
     level_rank = min(team_levels)
 
     # Round number = count of hands played so far
@@ -875,7 +923,7 @@ def handle_end_of_hand(room_id, play_type_label):
 
     result["round_number"] = game["round_number"]
     result["level_rank"] = str(level_rank)
-    
+
     emit("round_summary", {
         "roomId": room_id,
         "finishOrder": finish_order,
