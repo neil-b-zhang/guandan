@@ -7,9 +7,7 @@ from .words import WORDS  # If you use word-based room IDs
 rooms = {}
 
 def generate_room_id():
-    # For testing: return 'test'
-    #return '-'.join(random.choice(WORDS) for _ in range(3)).lower()
-    return 'test'
+    return 'test'  # For testing
 
 def initial_slots():
     return [None, None, None, None]
@@ -28,11 +26,12 @@ def create_room(username, card_back, wild_cards):
             "startingLevels": ["2", "2", "2", "2"],
             "showCardCount": False
         },
-        "slots": slots,  # always 4 slots
+        "slots": slots,
         "ready": {username: False},
         "hands": {},
         "levels": {},
-        "teams": get_teams_from_slots(slots)
+        "teams": get_teams_from_slots(slots),
+        "sids": {}  # ✅ Track session IDs for tribute handling
     }
     print(f"[rooms.py] Room {room_id} created with slots {slots} and settings {rooms[room_id]['settings']}")
     return room_id
@@ -43,7 +42,7 @@ def join_room(username, room_id):
         return False
     slots = rooms[room_id]["slots"]
     if username in slots:
-        return True  # already in a slot
+        return True
     for i in range(4):
         if not slots[i]:
             slots[i] = username
@@ -55,7 +54,6 @@ def join_room(username, room_id):
     return False
 
 def get_teams_from_slots(slots):
-    # slots[0] and [2] = Team A, [1] and [3] = Team B
     teamA = [p for i, p in enumerate(slots) if p and i % 2 == 0]
     teamB = [p for i, p in enumerate(slots) if p and i % 2 == 1]
     return [teamA, teamB]
@@ -75,9 +73,7 @@ def all_players_ready(room_id):
         slots = rooms[room_id]["slots"]
         players = [p for p in slots if p]
         ready = rooms[room_id]["ready"]
-        #return all(ready.get(p, False) for p in players) and len(players) == 4
         return all(ready.get(p, False) for p in players) and len(players) >= 2
-
     return False
 
 def get_ready_states(room_id):
@@ -95,9 +91,9 @@ def get_player_hand(room_id, username):
         return rooms[room_id]['hands'].get(username, [])
     return []
 
-# Extra: utility for moving seats (used by app.py)
 def move_seat(room_id, username, slot_idx):
-    if room_id not in rooms: return False
+    if room_id not in rooms:
+        return False
     slots = rooms[room_id]["slots"]
     if slots[slot_idx]:
         return False
@@ -107,3 +103,12 @@ def move_seat(room_id, username, slot_idx):
     slots[slot_idx] = username
     rooms[room_id]["teams"] = get_teams_from_slots(slots)
     return True
+
+# ✅ Register a user's Socket.IO session ID for direct messaging
+def register_sid(room_id, username, sid):
+    if room_id in rooms:
+        rooms[room_id].setdefault("sids", {})[username] = sid
+
+# ✅ Optional: retrieve a sid
+def get_sid(room_id, username):
+    return rooms.get(room_id, {}).get("sids", {}).get(username)

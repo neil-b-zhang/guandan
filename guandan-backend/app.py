@@ -1,5 +1,8 @@
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit, join_room as sio_join_room
+import threading
+import time
+
 from game.rooms import (
     create_room,
     join_room as join_existing_room,
@@ -12,16 +15,18 @@ from game.rooms import (
     rooms,
     generate_room_id
 )
-from game.deck import create_deck, shuffle_deck, deal_cards
+from game.deck import create_deck, shuffle_deck
 from game.hands import hand_type, beats, find_wilds
-import logging
-from collections import defaultdict
 
+import logging
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
 LEVEL_SEQUENCE = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 SUIT_OPTIONS = ['hearts', 'spades', 'diamonds', 'clubs']
+
+# --- (all your helper functions and class code goes here, unmodified) ---
+
 def level_index(lv):
     try:
         return LEVEL_SEQUENCE.index(lv)
@@ -32,10 +37,28 @@ def get_next_level(current, up):
     idx = min(level_index(current) + up, len(LEVEL_SEQUENCE) - 1)
     return LEVEL_SEQUENCE[idx]
 
+def initial_slots():
+    return [None, None, None, None]
+
+def fill_slot(slots, username):
+    for i in range(4):
+        if not slots[i]:
+            slots[i] = username
+            return i
+    return -1
+
+def get_teams_from_slots(slots):
+    teamA = [p for i, p in enumerate(slots) if p and i % 2 == 0]
+    teamB = [p for i, p in enumerate(slots) if p and i % 2 == 1]
+    return [teamA, teamB]
+
+def player_is_finished(room_id, player):
+    return len(rooms[room_id]['hands'][player]) == 0
+
+def get_finished_players(room_id):
+    return [p for p in rooms[room_id]['game']['players'] if player_is_finished(room_id, p)]
+
 def next_player_with_cards(game, room_id, start_idx):
-    """Finds the next player with cards, starting after start_idx (wraps around).
-    Returns index of player, or None if no one has cards.
-    """
     players = game['players']
     num_players = len(players)
     for offset in range(1, num_players+1):
@@ -44,12 +67,6 @@ def next_player_with_cards(game, room_id, start_idx):
         if len(rooms[room_id]['hands'][player]) > 0:
             return idx
     return None
-
-def player_is_finished(room_id, player):
-    return len(rooms[room_id]['hands'][player]) == 0
-
-def get_finished_players(room_id):
-    return [p for p in rooms[room_id]['game']['players'] if player_is_finished(room_id, p)]
 
 def get_last_play_type(game):
     last_play = game.get('current_play')
@@ -65,23 +82,14 @@ def get_last_play_type(game):
     return None
 
 def handle_end_of_round(room):
-    """
-    Update room state for end of round, handle all win/game/ace rules.
-
-    :param room: the room object/dict with all current state
-    :return: dict with info about next state, or None if game ends
-    """
     levels = room['levels']
     teams = room['teams']  # [teamA, teamB]
     finish_order = room['game']['finish_order']
     ace_attempts = room.setdefault('ace_attempts', {0: 0, 1: 0})
     teamA, teamB = teams
 
-    # Safely extract finishers
     first = finish_order[0] if len(finish_order) > 0 else None
     second = finish_order[1] if len(finish_order) > 1 else None
-    third = finish_order[2] if len(finish_order) > 2 else None
-    fourth = finish_order[3] if len(finish_order) > 3 else None
 
     print(f"[ROUND END] Finish order: {finish_order}")
 
@@ -93,16 +101,12 @@ def handle_end_of_round(room):
             "levels": dict(levels)
         }
 
-    # Determine teams
     first_team = teamA if first in teamA else teamB
     second_team = teamA if second in teamA else teamB
-
-    # Determine winner team
     same_team_win = first_team == second_team
     winners_team = first_team if same_team_win else first_team
     losers_team = teamB if winners_team == teamA else teamA
 
-    # Determine win type
     win_indices = [finish_order.index(p) for p in winners_team if p in finish_order]
     win_indices.sort()
     win_type = None
@@ -118,7 +122,6 @@ def handle_end_of_round(room):
         win_type = "1-4"
         level_up = 1
 
-    # --- ACE logic ---
     ace_level = LEVEL_SEQUENCE[-1]
     declarer_team = winners_team
     declarer_at_ace = all(levels.get(p) == ace_level for p in declarer_team)
@@ -128,7 +131,6 @@ def handle_end_of_round(room):
 
     if declarer_at_ace:
         team_id = 0 if declarer_team == teamA else 1
-
         if win_type in ("1-2", "1-3"):
             game_just_won = True
             ace_attempts[team_id] = 0
@@ -148,14 +150,12 @@ def handle_end_of_round(room):
                 ace_loser_ace_bomb = True
                 ace_attempts[team_id] = 0
 
-    # Promotion logic
     if not (declarer_at_ace and (game_just_won or ace_reset or ace_loser_ace_bomb)):
         for p in declarer_team:
             levels[p] = get_next_level(levels[p], level_up)
             if levels[p] not in LEVEL_SEQUENCE:
                 levels[p] = ace_level
 
-    # Opponent win case
     if first in losers_team:
         for p in losers_team:
             levels[p] = get_next_level(levels[p], level_up)
@@ -166,7 +166,6 @@ def handle_end_of_round(room):
             team_id = 0 if declarer_team == teamA else 1
             ace_attempts[team_id] = 0
 
-    # Record round metadata
     room['levels'] = levels
     room['ace_attempts'] = ace_attempts
     room['winning_team'] = declarer_team
@@ -220,26 +219,14 @@ def determine_tributes(room):
     }
 
 def deal_to_all_players(room_id):
+    """
+    Patch: replaces per-user hand deals.
+    Broadcast all hands to all players in room after dealing/tribute/return.
+    """
     room = rooms[room_id]
-    for username in room['players']:
-        player_hand = room['hands'].get(username)
-        if player_hand:
-            socketio.emit('deal_hand', {
-                'username': username,
-                'hand': player_hand
-            }, to=room['sids'][username])  # emits to correct player
-    room['dealt_players'] = set(room['players'])  # simulate all dealt
-
-    print(f"[DEBUG] Dealt to all players. Game round: {room['game'].get('round_number', '?')}")
-    print(f"[DEBUG] Finish order from last round: {room['game'].get('finish_order')}")
-
-    tribute = determine_tributes(room)
-    if tribute:
-        room['tribute_state'] = tribute
-        print(f"[TRIBUTE] Starting tribute phase for room {room_id}")
-        print(f"  Tribute info: {tribute}")
-        socketio.emit('tribute_start', tribute, room=room_id)
-
+    socketio.emit("all_hands", {
+        "hands": {p: room['hands'][p] for p in room['players']}
+    }, room=room_id)
 
 def initial_slots():
     return [None, None, None, None]
@@ -264,7 +251,7 @@ def emit_game_update(room_id, current_player, play_type=None, can_end_round=Fals
         'hands': rooms[room_id]['hands'],
         'current_player': current_player,
         'can_end_round': can_end_round,
-        'passed_players': list(game.get('passes', set())),
+        'passed_players': list(game.get('passes', [])),
         'levels': rooms[room_id]["levels"],
         'teams': rooms[room_id]["teams"],
         'slots': rooms[room_id]["slots"],
@@ -275,7 +262,6 @@ def emit_game_update(room_id, current_player, play_type=None, can_end_round=Fals
         'finished_players': get_finished_players(room_id),
         'finish_order': game.get('finish_order', [])
     }, room=room_id)
-
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
@@ -288,7 +274,7 @@ def index():
 @socketio.on('create_room')
 def handle_create_room(data):
     username = data.get('username')
-    room_name = data.get('roomName', '')  # Optional from frontend
+    room_name = data.get('roomName', '')
     card_back = data.get('cardBack', 'red')
     wild_cards = data.get('wildCards', True)
     trump_suit = data.get('trumpSuit', 'hearts')
@@ -298,25 +284,20 @@ def handle_create_room(data):
         emit('error_msg', "Username required.", room=request.sid)
         return
 
-    # Use user-supplied lobby name if present, otherwise generate one
     if room_name:
-        # Sanitize: lowercase, replace spaces with dashes
         room_id = room_name.strip().lower().replace(" ", "-")
     else:
         room_id = generate_room_id()
 
-    # Check for existing room
     if room_id in rooms:
         emit('error_msg', "Game lobby already exists with that name", room=request.sid)
         return
 
-    # Optionally check if username is already in use in another room
     for existing in rooms.values():
         if username in existing.get("players", []):
             emit('error_msg', f"Username '{username}' already exists in another room.", room=request.sid)
             return
 
-    # --- Create the new room with slot 0 assigned to creator ---
     rooms[room_id] = {
         "settings": {
             "cardBack": card_back,
@@ -328,12 +309,12 @@ def handle_create_room(data):
         "slots": [username, None, None, None],
         "ready": {username: False},
         "hands": {},
-        "connected_sids": set([request.sid])   
-}
+        "connected_sids": [request.sid]
+    }
     print(f"[rooms.py] Room {room_id} created with settings {rooms[room_id]['settings']}")
 
     sio_join_room(room_id)
-    rooms[room_id].setdefault("connected_sids", set()).add(request.sid)
+    rooms[room_id].setdefault("connected_sids", []).append(request.sid)
 
     emit('room_joined', {
         "roomId": room_id,
@@ -343,6 +324,27 @@ def handle_create_room(data):
         "settings": rooms[room_id]["settings"]
     }, room=request.sid)
 
+@socketio.on('register_sid')
+def handle_register_sid(data):
+    room_id = data.get('roomId')
+    username = data.get('username')
+    sid = request.sid
+    if room_id in rooms and username:
+        rooms[room_id].setdefault('sids', {})[username] = sid
+        join_room(room_id, sid=sid)  # Critical: ensure this socket is in the room for broadcasts!
+        print(f"[SID] Registered sid for {username} in room {room_id}: {sid}")
+        room = rooms[room_id]
+        players = room.get("players", [])
+        sids = room.get("sids", {})
+        print(f"[DEBUG] register_sid check: players={players}, sids={list(sids.keys())}, dealt_players={room.get('dealt_players')}")
+        if (
+            "game" in room
+            and len(players) == 4
+            and all(player in sids for player in players)
+            and not room.get("dealt_players")
+        ):
+            print("[SID] All SIDs registered. Scheduling deal_to_all_players...")
+            threading.Timer(0.3, deal_to_all_players, args=(room_id,)).start()
 
 @socketio.on('join_room')
 def handle_join_room(data):
@@ -382,43 +384,91 @@ def handle_join_room(data):
     }, room=request.sid)
     broadcast_room_update(room_id)
 
-@socketio.on('move_seat')
-def handle_move_seat(data):
-    username = data.get('username')
+@socketio.on('set_ready')
+def handle_set_ready(data):
     room_id = data.get('roomId')
-    slot_idx = data.get('slotIdx')
-    if not username or room_id not in rooms or slot_idx is None:
-        return
-    slots = rooms[room_id]["slots"]
-    if slots[slot_idx]:
-        emit('error_msg', "Seat already taken.", room=request.sid)
-        return
-    # Remove user from previous slot, if any
-    for i in range(4):
-        if slots[i] == username:
-            slots[i] = None
-    # Assign to new slot
-    slots[slot_idx] = username
-    rooms[room_id]["slots"] = slots
-    # Update teams based on slot arrangement
-    rooms[room_id]["teams"] = get_teams_from_slots(slots)
-    # Broadcast updated room state to all players in the room
+    username = data.get('username')
+    ready = data.get('ready', False)
+    set_player_ready(room_id, username, ready)
     broadcast_room_update(room_id)
 
-
-@socketio.on('update_room_settings')
-def handle_update_room_settings(data):
+@socketio.on('start_game')
+def handle_start_game(data):
     room_id = data.get('roomId')
-    new_settings = data.get('settings', {})
-    if room_id not in rooms:
+    username = data.get('username')
+    if not all_players_ready(room_id):
+        emit('error_msg', "Not all players are ready!", room=request.sid)
         return
-    for k in ["wildCards", "cardBack", "trumpSuit", "startingLevels", "showCardCount", "highlightWilds"]:
-        if k in new_settings:
-            rooms[room_id]["settings"][k] = new_settings[k]
+    start_new_game_round(room_id)
+
+def start_new_game_round(room_id):
+    room = rooms[room_id]
+    slots = room["slots"]
+    players = [u for u in slots if u]
+    room["players"] = players
+    deck = create_deck()
+    shuffle_deck(deck)
+
+    hands = []
+    for _ in range(len(players)):
+        hand = [deck.pop() for _ in range(2)]
+        hands.append(hand)
+    for player, hand in zip(players, hands):
+        set_player_hand(room_id, player, hand)
+
+    starting_levels = room["settings"].get("startingLevels", ["2", "2", "2", "2"])
+    levels = room.get("levels", {})
+    if not levels or any(lv not in LEVEL_SEQUENCE for lv in levels.values()):
+        levels = {}
+        for i, player in enumerate(slots):
+            if player:
+                levels[player] = starting_levels[i]
+    room["levels"] = levels
+
+    teams = get_teams_from_slots(slots)
+    room["teams"] = teams
+
+    winning_team = room.get("winning_team", teams[0])
+    team_lvls = [levels[p] for p in winning_team]
+    current_level = min(team_lvls, key=lambda lv: LEVEL_SEQUENCE.index(lv))
+    trump_suit = room["settings"].get("trumpSuit", "hearts")
+    wild_cards = room["settings"].get("wildCards", True)
+
+    game = {
+        'players': players,
+        'turn_index': 0,
+        'current_play': None,
+        'round_active': True,
+        'passes': [],
+        'current_winner': None,
+        'finish_order': room.get("finish_order", []),
+        'trumpSuit': trump_suit,
+        'levelRank': current_level,
+        'wildCards': wild_cards,
+        'startingLevels': starting_levels,
+        'round_number': room.get("game", {}).get("round_number", 0) + 1
+    }
+    room['game'] = game
+    room['ace_attempts'] = {0: 0, 1: 0}
+    room.pop('tribute_state', None)
+
+    emit('game_started', {
+        "roomId": room_id,
+        "current_player": players[0],
+        "levels": levels,
+        "teams": teams,
+        "slots": slots,
+        "settings": room["settings"],
+        "trumpSuit": trump_suit,
+        "levelRank": current_level,
+        "wildCards": wild_cards,
+        "startingLevels": starting_levels,
+        "hands": {p: room['hands'][p] for p in players}
+    }, room=room_id)
+
     broadcast_room_update(room_id)
 
 def broadcast_room_update(room_id):
-    """Emit the full current lobby state to all users in the room."""
     if room_id not in rooms:
         return
     room = rooms[room_id]
@@ -428,10 +478,9 @@ def broadcast_room_update(room_id):
         "slots": room.get("slots", [None, None, None, None]),
         "readyStates": room.get("ready", {}),
         "settings": room.get("settings", {}),
-        "teams": room.get("teams", [[], []]),  # If you support teams
-        "levels": room.get("levels", {}),      # If you track per-player/team levels
+        "teams": room.get("teams", [[], []]),
+        "levels": room.get("levels", {}),
         "startingLevels": room["settings"].get("startingLevels", ["2","2","2","2"])
-        # Add any other state you want the frontend to keep in sync
     }, room=room_id)
 
 @socketio.on('set_ready')
@@ -449,8 +498,6 @@ def handle_start_game(data):
     if not all_players_ready(room_id):
         emit('error_msg', "Not all players are ready!", room=request.sid)
         return
-    # Determine trump/level for new round: use the winning team's level if present,
-    # otherwise use starting levels from settings.
     start_new_game_round(room_id)
 
 @socketio.on('deal_hand')
@@ -465,34 +512,22 @@ def handle_deal_hand(data):
     if player_hand:
         socketio.emit('deal_hand', {
             'username': username,
-            'hand': player_hand
-        }, room=request.sid)
+            'hand': room['hands'][username]
+        }, room=room_id)
 
     if 'dealt_players' not in room:
-        room['dealt_players'] = set()
-    room['dealt_players'].add(username)
-
-    if len(room['dealt_players']) == 4:
-        print(f"[DEBUG] Dealt to all players. Game round: {room['game'].get('round_number', '?')}")
-        print(f"[DEBUG] Finish order from last round: {room['game'].get('finish_order')}")
-
-        tribute = determine_tributes(room)
-        if tribute:
-            room['tribute_state'] = tribute
-            print(f"[TRIBUTE] Starting tribute phase for room {room_id}")
-            print(f"  Tribute info: {tribute}")
-            socketio.emit('tribute_start', tribute, room=room_id)
+        room['dealt_players'] = []
+    if username not in room['dealt_players']:
+        room['dealt_players'].append(username)
 
 def start_new_game_round(room_id):
-    slots = rooms[room_id]["slots"]
+    room = rooms[room_id]
+    slots = room["slots"]
     players = [u for u in slots if u]
+    room["players"] = players
     deck = create_deck()
     shuffle_deck(deck)
 
-    # REAL DEALING CODE COMMENTED OUT FOR TESTING
-    #hands = deal_cards(deck, len(players))
-    #for player, hand in zip(players, hands):
-    #    set_player_hand(room_id, player, hand)
     hands = []
     for _ in range(len(players)):
         hand = [deck.pop() for _ in range(2)]
@@ -500,65 +535,63 @@ def start_new_game_round(room_id):
     for player, hand in zip(players, hands):
         set_player_hand(room_id, player, hand)
 
-    # If we just finished a hand, levels were already advanced
-    starting_levels = rooms[room_id]["settings"].get("startingLevels", ["2","2","2","2"])
-    levels = rooms[room_id].get("levels", {})
-    # If no levels exist, assign starting levels:
+    starting_levels = room["settings"].get("startingLevels", ["2", "2", "2", "2"])
+    levels = room.get("levels", {})
     if not levels or any(lv not in LEVEL_SEQUENCE for lv in levels.values()):
         levels = {}
         for i, player in enumerate(slots):
             if player:
                 levels[player] = starting_levels[i]
-    rooms[room_id]["levels"] = levels
-    rooms[room_id]["teams"] = get_teams_from_slots(slots)
-    settings = rooms[room_id].get("settings", {})
-    # Determine current round's level: leading team determines the level
-    teams = rooms[room_id]["teams"]
-    # Default: team A is leading if just started
-    winning_team = teams[0] if "winning_team" not in rooms[room_id] else rooms[room_id]["winning_team"]
-    # Set current round levelRank as the minimum of winning team's levels (per classic rules)
+    room["levels"] = levels
+
+    teams = get_teams_from_slots(slots)
+    room["teams"] = teams
+
+    winning_team = room.get("winning_team", teams[0])
     team_lvls = [levels[p] for p in winning_team]
     current_level = min(team_lvls, key=lambda lv: LEVEL_SEQUENCE.index(lv))
-    trump_suit = settings.get("trumpSuit", "hearts")
-    wild_cards = settings.get("wildCards", True)
-    rooms[room_id]['game'] = {
+    trump_suit = room["settings"].get("trumpSuit", "hearts")
+    wild_cards = room["settings"].get("wildCards", True)
+
+    game = {
         'players': players,
         'turn_index': 0,
         'current_play': None,
         'round_active': True,
-        'passes': set(),
+        'passes': [],
         'current_winner': None,
-        'finish_order': [],
+        'finish_order': room.get("finish_order", []),
         'trumpSuit': trump_suit,
         'levelRank': current_level,
         'wildCards': wild_cards,
-        'startingLevels': starting_levels
+        'startingLevels': starting_levels,
+        'round_number': room.get("game", {}).get("round_number", 0) + 1
     }
-    rooms[room_id]['ace_attempts'] = {0: 0, 1: 0}  # Track failed Ace tries per team
+    room['game'] = game
+    room['ace_attempts'] = {0: 0, 1: 0}
+    room.pop('tribute_state', None)
 
     emit('game_started', {
         "roomId": room_id,
         "current_player": players[0],
         "levels": levels,
-        "teams": rooms[room_id]["teams"],
+        "teams": teams,
         "slots": slots,
-        "settings": settings,
+        "settings": room["settings"],
         "trumpSuit": trump_suit,
         "levelRank": current_level,
         "wildCards": wild_cards,
         "startingLevels": starting_levels,
-        "hands": {p: rooms[room_id]['hands'][p] for p in players}
+        "hands": {p: room['hands'][p] for p in players}
     }, room=room_id)
+
     broadcast_room_update(room_id)
-    for player in players:
-        hand = get_player_hand(room_id, player)
-        emit('deal_hand', {"hand": hand, "username": player}, room=room_id)
+    deal_to_all_players(room_id)  
+
 
 def start_new_trick(room_id, winner_username):
     game = rooms[room_id]['game']
     players = game['players']
-
-    # Find next eligible player with cards to lead (skip out-of-card players)
     idx = players.index(winner_username)
     num_players = len(players)
     next_player = None
@@ -568,11 +601,9 @@ def start_new_trick(room_id, winner_username):
         if len(rooms[room_id]['hands'][candidate]) > 0:
             next_player = candidate
             break
-
-    # Only now do we clear current_play, since a new trick is about to be started (a real player with cards)
     game['turn_index'] = players.index(next_player) if next_player else 0
     game['current_play'] = None
-    game['passes'] = set()
+    game['passes'] = []
     game['current_winner'] = next_player
 
     print(f"[EMIT game_update] Called from start_new_trick, next_player: {next_player}")
@@ -591,7 +622,6 @@ def start_new_trick(room_id, winner_username):
         'wildCards': game.get("wildCards"),
         'startingLevels': game.get("startingLevels")
     }, room=room_id)
-
 
 @socketio.on('play_cards')
 def handle_play_cards(data):
@@ -614,7 +644,6 @@ def handle_play_cards(data):
         emit('error_msg', "Invalid hand type!", room=request.sid)
         return
 
-    # Check if the play beats the current play
     if game['current_play'] and game['current_play']['cards']:
         if not beats(game['current_play'], {'player': username, 'cards': cards},
                      game['levelRank'], game['trumpSuit'], game['wildCards']):
@@ -623,7 +652,6 @@ def handle_play_cards(data):
 
     print(f"[PLAY_CARDS] {username} played: {cards} | Type: {this_type[0]}")
 
-    # Remove cards from player's hand (wild fallback support)
     for card in cards:
         if card in player_hand:
             player_hand.remove(card)
@@ -633,18 +661,19 @@ def handle_play_cards(data):
                     player_hand.remove(w)
                     break
 
-    # Update game state
     rooms[room_id]['hands'][username] = player_hand
+
+    # PATCH: Broadcast all hands after any hand change
+    deal_to_all_players(room_id)
+
     game['current_play'] = {'player': username, 'cards': cards}
-    game['passes'] = set()
+    game['passes'] = []
     game['current_winner'] = username
     play_type_label = this_type[0]
 
-    # Check if player has finished
     if len(player_hand) == 0 and username not in game['finish_order']:
         game['finish_order'].append(username)
         print(f"[FINISH] {username} has finished. Transferring current_winner to their partner.")
-        # Reassign current_winner to partner
         teams = rooms[room_id]["teams"]
         for team in teams:
             if username in team:
@@ -653,7 +682,6 @@ def handle_play_cards(data):
         print(f"[FINISH] New current_winner is {partner}")
         game['current_winner'] = partner
 
-    # Check if a team is done
     teams = rooms[room_id]['teams']
     finished = get_finished_players(room_id)
     team_a_done = all(p in finished for p in teams[0])
@@ -665,7 +693,6 @@ def handle_play_cards(data):
         handle_end_of_hand(room_id, play_type_label)
         return
 
-    # Advance to next player with cards
     next_idx = next_player_with_cards(game, room_id, game['turn_index'])
     if next_idx is not None:
         game['turn_index'] = next_idx
@@ -686,8 +713,9 @@ def handle_pass_turn(data):
         emit('error_msg', "Invalid pass action", room=request.sid)
         return
 
-    # Add the player to the set of passed players
-    game.setdefault('passes', set()).add(username)
+    # Add the player to the passes list (no sets!)
+    if username not in game.setdefault('passes', []):
+        game['passes'].append(username)
 
     winner = game.get('current_winner')
 
@@ -700,14 +728,12 @@ def handle_pass_turn(data):
     print(f"Finished players: {get_finished_players(room_id)}")
 
     players_in = set(p for p in game['players'] if not player_is_finished(room_id, p))
-    non_passed = players_in - game['passes']
+    non_passed = players_in - set(game['passes'])
     print(f"Players with cards still in trick: {players_in}")
     print(f"Non-passed players: {non_passed}")
 
-    # === CASE 1A: All players have passed
     if len(non_passed) == 0:
         if player_is_finished(room_id, winner):
-            # Winner has no cards, find partner
             teams = rooms[room_id]["teams"]
             for team in teams:
                 if winner in team:
@@ -721,7 +747,6 @@ def handle_pass_turn(data):
                 can_end_round=True
             )
         else:
-            # Winner still has cards and gets to lead again
             print(f"[ALL PASSED] Winner {winner} will continue and can end round.")
             emit_game_update(
                 room_id,
@@ -731,13 +756,11 @@ def handle_pass_turn(data):
             )
         return
 
-    # === CASE 1B: Only one player not passed, and it's the winner
     if len(non_passed) == 1 and winner in non_passed:
         print(f"[CHECK] Only one player not passed: {winner}")
         print(f"[CHECK] Is winner finished? {player_is_finished(room_id, winner)}")
 
         if player_is_finished(room_id, winner):
-            # Winner is finished, give lead to partner
             teams = rooms[room_id]["teams"]
             for team in teams:
                 if winner in team:
@@ -760,7 +783,6 @@ def handle_pass_turn(data):
             )
         return
 
-    # === CASE 2: Trick continues — move to next player with cards
     next_idx = next_player_with_cards(game, room_id, game['turn_index'])
     if next_idx is not None:
         game['turn_index'] = next_idx
@@ -774,7 +796,6 @@ def handle_pass_turn(data):
         print("[FALLBACK] No next player found.")
         emit_game_update(room_id, current_player=None)
 
-
 @socketio.on('end_round')
 def handle_end_round(data):
     room_id = data.get('roomId')
@@ -787,12 +808,10 @@ def handle_end_round(data):
 
     winner = game.get('current_winner')
 
-    # Allow if username == current_winner
     if username == winner:
         start_new_trick(room_id, username)
         return
 
-    # Allow if winner is finished and username is their partner
     if player_is_finished(room_id, winner):
         teams = rooms[room_id]["teams"]
         for team in teams:
@@ -865,7 +884,6 @@ def handle_return_tribute(data):
     else:
         socketio.emit('tribute_update', {'tribute_state': tribute_state}, room=room_id)
 
-
 @socketio.on('connect')
 def handle_connect():
     print('A client connected, sid:', request.sid)
@@ -878,21 +896,17 @@ def handle_disconnect():
     print('A client disconnected, sid:', request.sid)
     rooms_to_cleanup = []
 
-    # Remove this SID from all rooms (a user might be in multiple rooms in rare cases)
     for room_id, room in list(rooms.items()):
-        sids = room.get("connected_sids", set())
+        sids = room.get("connected_sids", [])
         if request.sid in sids:
             sids.remove(request.sid)
             room["connected_sids"] = sids
-            # If room is now empty, mark for delayed cleanup
             if not sids:
                 rooms_to_cleanup.append(room_id)
 
-    # Delay cleanup by 10 seconds (so if someone rejoins, room is not deleted)
     def delayed_cleanup(room_id):
         import time
         time.sleep(10)
-        # Double check room still exists and is still empty
         if room_id in rooms and not rooms[room_id].get("connected_sids"):
             print(f"[Room Cleanup] Deleting room {room_id} after 10s of inactivity.")
             del rooms[room_id]
@@ -913,12 +927,9 @@ def handle_end_of_hand(room_id, play_type_label):
     result["slots"] = rooms[room_id].get("slots", [None, None, None, None])
     print("[ROUND SUMMARY] Sending to frontend:", result)
 
-    # Compute level being played = min level of winning team
     team_levels = [int(room["levels"].get(p, 2)) for p in room["teams"][0]]
     level_rank = min(team_levels)
 
-    # Round number = count of hands played so far
-    # Add a counter if it doesn't exist
     game["round_number"] = game.get("round_number", 1) + 1
 
     result["round_number"] = game["round_number"]
@@ -930,9 +941,7 @@ def handle_end_of_hand(room_id, play_type_label):
         "result": result
     }, room=room_id)
 
-    # Optional: clear game state to force players back to lobby until new start
     del rooms[room_id]["game"]
-
 
 if __name__ == "__main__":
     print("Starting Guandan backend with async_mode =", socketio.async_mode)

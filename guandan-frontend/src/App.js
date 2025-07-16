@@ -192,7 +192,7 @@ export default function App() {
 
   // ---- SOCKET CONNECTION + EVENT HANDLERS ----
   useEffect(() => {
-    const s = io("http://localhost:5000", { transports: ["polling"] });
+    const s = io("http://localhost:5000", { transports: ["websocket", "polling"] });
     setSocket(s);
 
     s.on("connect", () => setConnected(true));
@@ -200,6 +200,7 @@ export default function App() {
 
     // ---- Lobby/Game Join
     s.on("room_joined", data => {
+      console.log("[ROOM_JOINED]", data);
       setLobbyInfo(data);
       setInRoom(true);
       setCurrentPlayer(null);
@@ -219,6 +220,10 @@ export default function App() {
       setStartingLevels((data.settings && data.settings.startingLevels) || ["2","2","2","2"]);
       setLevelRank((data.levelRank) || "2");
       setHands({});
+      s.emit("register_sid", {
+        roomId: data.roomId,
+        username: data.username
+      });
     });
 
     // ---- Room Update: keeps lobby state in sync for everyone
@@ -238,17 +243,7 @@ export default function App() {
       setStartingLevels((data.settings && data.settings.startingLevels) || ["2","2","2","2"]);
     });
 
-    // ---- Deal your hand privately
-    s.on("deal_hand", data => {
-      if (lobbyInfoRef.current && data.username === lobbyInfoRef.current.username) {
-        // Sort the new hand in value order (using the current level)
-        const sortedHand = [...data.hand].sort(
-          (a, b) => cardSortKey(a, levelRank) - cardSortKey(b, levelRank)
-        );
-        setPlayerHand(sortedHand);
-        setHandOrder(sortedHand); // Also reset the handOrder for drag-and-drop
-      }
-    });
+
 
     // ---- Game Start
     s.on("game_started", data => {
@@ -269,6 +264,18 @@ export default function App() {
       setLevelRank((data.levelRank) || "2");
       setHands(data.hands || {});
       setGamePhase("game");
+    });
+
+      // ---- Handle the all_hands broadcast: update *your* hand only
+    s.on("all_hands", data => {
+      console.log("[SOCKET] all_hands event received", data);
+      if (lobbyInfoRef.current) {
+        const username = lobbyInfoRef.current.username;
+        if (data.hands && data.hands[username]) {
+          setPlayerHand(data.hands[username]);
+          setHandOrder(data.hands[username]);
+        }
+      }
     });
 
     // ---- In-game updates (after every move)
@@ -341,7 +348,6 @@ export default function App() {
       setGamePhase("lobby");
     });
 
-
     // === Tribute handlers ===
     s.on("tribute_start", (data) => {
       console.log("[FRONTEND] Tribute phase begins:", data);
@@ -378,7 +384,10 @@ export default function App() {
     s.on("error_msg", msg => { setErrorMsg(msg); alert(msg); });
 
 
-    return () => { s.disconnect(); };
+    return () => { 
+      s.off("all_hands")
+      s.disconnect(); 
+    };
     // eslint-disable-next-line
   }, []);
 
