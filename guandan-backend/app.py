@@ -65,8 +65,8 @@ def get_last_play_type(game):
         if hand_info:
             return hand_info[0]
     return None
-    
-def handle_end_of_round(room):
+
+def handle_end_of_trick(room):
     levels = room['levels']
     teams = room['teams']  # [teamA, teamB]
     finish_order = room['game']['finish_order']
@@ -424,7 +424,9 @@ def handle_deal_hand(data):
 
 def initiate_tribute_phase(room_id):
     room = rooms[room_id]
+    print("[DEBUG] Initiate tribute phase called for", room_id)
     last_finish_order = room.get("last_finish_order") or room.get("game", {}).get("finish_order", [])
+    print("[DEBUG] last_finish_order:", last_finish_order)
     if not last_finish_order or len(last_finish_order) < 2:
         print("[TRIBUTE] No valid finish order; skipping tribute phase.")
         return
@@ -437,7 +439,7 @@ def initiate_tribute_phase(room_id):
         "step": "pay",
         "payers": [],
         "recipients": [],
-        "tributes": {},
+        "tributes": [],  
         "return_cards": {},
         "blockable": False,
         "blocked": False,
@@ -447,18 +449,23 @@ def initiate_tribute_phase(room_id):
 
     if (last_finish_order[0] in teamA and last_finish_order[1] in teamA) or \
        (last_finish_order[0] in teamB and last_finish_order[1] in teamB):
-        # 1-2 win: both losers pay tribute
         losers = [last_finish_order[-1], last_finish_order[-2]]
         winners = [last_finish_order[0], last_finish_order[1]]
         tribute_state["payers"] = losers
         tribute_state["recipients"] = winners
+        tribute_state["tributes"] = [
+            {"from": losers[0], "to": winners[0]},
+            {"from": losers[1], "to": winners[1]}
+        ]
         tribute_state["blockable"] = True
         tribute_state["type"] = "1-2"
         tribute_state["info"] = "Both losers must pay tribute to 1st and 2nd place players."
     else:
-        # 1-3 or 1-4 win: only last pays tribute to 1st
         tribute_state["payers"] = [last_finish_order[-1]]
         tribute_state["recipients"] = [last_finish_order[0]]
+        tribute_state["tributes"] = [
+            {"from": last_finish_order[-1], "to": last_finish_order[0]}
+        ]
         tribute_state["blockable"] = True
         if len(set(last_finish_order[:3])) == 3:
             tribute_state["type"] = "1-3"
@@ -473,6 +480,7 @@ def initiate_tribute_phase(room_id):
     socketio.emit("tribute_start", tribute_state, room=room_id)
 
 
+
 def start_new_game_round(room_id):
     room = rooms[room_id]
     slots = room["slots"]
@@ -480,7 +488,6 @@ def start_new_game_round(room_id):
     room["players"] = players
     deck = create_deck()
     shuffle_deck(deck)
-
     hands = []
     for _ in range(len(players)):
         hand = [deck.pop() for _ in range(1)]
@@ -505,6 +512,7 @@ def start_new_game_round(room_id):
     current_level = min(team_lvls, key=lambda lv: LEVEL_SEQUENCE.index(lv))
     trump_suit = room["settings"].get("trumpSuit", "hearts")
     wild_cards = room["settings"].get("wildCards", True)
+    room['round_number'] = room.get('round_number', 0) + 1
 
     game = {
         'players': players,
@@ -518,7 +526,7 @@ def start_new_game_round(room_id):
         'levelRank': current_level,
         'wildCards': wild_cards,
         'startingLevels': starting_levels,
-        'round_number': room.get("game", {}).get("round_number", 0) + 1
+        'round_number': room['round_number']
     }
     room['game'] = game
     room['ace_attempts'] = {0: 0, 1: 0}
@@ -542,7 +550,8 @@ def start_new_game_round(room_id):
     deal_to_all_players(room_id)  
 
     # Only trigger tribute phase after the first round
-    round_num = room['game']['round_number']
+    round_num = room['round_number']
+    print(f"[DEBUG] round_number: {round_num} (should call tribute phase if >1)")
     if round_num > 1:
         initiate_tribute_phase(room_id)
 
@@ -895,7 +904,7 @@ def handle_end_of_hand(room_id, play_type_label):
     finish_order = game.get("finish_order", [])
     print(f"[ROUND END] Finish order: {finish_order}")
 
-    result = handle_end_of_round(room)
+    result = handle_end_of_trick(room)
     print(f"[ROUND RESULT] Win type: {room.get('win_type')}, Declarer team: {room.get('winning_team')}, Levels: {room['levels']}")
 
     result["slots"] = rooms[room_id].get("slots", [None, None, None, None])
@@ -903,10 +912,7 @@ def handle_end_of_hand(room_id, play_type_label):
 
     team_levels = [int(room["levels"].get(p, 2)) for p in room["teams"][0]]
     level_rank = min(team_levels)
-
-    game["round_number"] = game.get("round_number", 1) + 1
-
-    result["round_number"] = game["round_number"]
+    result["round_number"] = room["round_number"] 
     result["level_rank"] = str(level_rank)
 
     emit("round_summary", {
@@ -915,6 +921,7 @@ def handle_end_of_hand(room_id, play_type_label):
         "result": result
     }, room=room_id)
 
+    room['last_finish_order'] = list(game.get('finish_order', []))
     del rooms[room_id]["game"]
 
 if __name__ == "__main__":

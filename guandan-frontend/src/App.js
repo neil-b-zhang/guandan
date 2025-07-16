@@ -669,10 +669,7 @@ export default function App() {
     const isCreator = slots[0] === username;
     const allReady = slots.filter(Boolean).every(player => readyStates[player]);
 
-    console.log("settings.highlightWilds in App:", settings.highlightWilds);
-
     return (
-
       /* Card Back & Show Card Counter */
       <div style={{ textAlign: "center", marginTop: "2.2rem" }}>
         {renderErrorBanner()}
