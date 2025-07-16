@@ -65,6 +65,107 @@ def get_last_play_type(game):
         if hand_info:
             return hand_info[0]
     return None
+    
+def handle_end_of_round(room):
+    levels = room['levels']
+    teams = room['teams']  # [teamA, teamB]
+    finish_order = room['game']['finish_order']
+    ace_attempts = room.setdefault('ace_attempts', {0: 0, 1: 0})
+    teamA, teamB = teams
+
+    first = finish_order[0] if len(finish_order) > 0 else None
+    second = finish_order[1] if len(finish_order) > 1 else None
+
+    print(f"[ROUND END] Finish order: {finish_order}")
+
+    if not first or not second:
+        print("[ERROR] Not enough players finished to evaluate end-of-round rules.")
+        return {
+            "game_over": False,
+            "error": "Not enough players finished to determine round outcome.",
+            "levels": dict(levels)
+        }
+
+    first_team = teamA if first in teamA else teamB
+    second_team = teamA if second in teamA else teamB
+    same_team_win = first_team == second_team
+    winners_team = first_team if same_team_win else first_team
+    losers_team = teamB if winners_team == teamA else teamA
+
+    win_indices = [finish_order.index(p) for p in winners_team if p in finish_order]
+    win_indices.sort()
+    win_type = None
+    level_up = 1
+
+    if win_indices == [0, 1]:
+        win_type = "1-2"
+        level_up = 4
+    elif win_indices == [0, 2]:
+        win_type = "1-3"
+        level_up = 2
+    else:
+        win_type = "1-4"
+        level_up = 1
+
+    ace_level = LEVEL_SEQUENCE[-1]
+    declarer_team = winners_team
+    declarer_at_ace = all(levels.get(p) == ace_level for p in declarer_team)
+    game_just_won = False
+    ace_reset = False
+    ace_loser_ace_bomb = False
+
+    if declarer_at_ace:
+        team_id = 0 if declarer_team == teamA else 1
+        if win_type in ("1-2", "1-3"):
+            game_just_won = True
+            ace_attempts[team_id] = 0
+        elif win_type == "1-4":
+            ace_attempts[team_id] += 1
+            if ace_attempts[team_id] >= 3:
+                for p in declarer_team:
+                    levels[p] = LEVEL_SEQUENCE[0]
+                ace_reset = True
+                ace_attempts[team_id] = 0
+        elif losers_team == declarer_team:
+            ace_attempts[team_id] += 1
+            last_play = room['game'].get('last_play_cards', [])
+            if last_play and all(card[0] == 'A' for card in last_play):
+                for p in declarer_team:
+                    levels[p] = LEVEL_SEQUENCE[0]
+                ace_loser_ace_bomb = True
+                ace_attempts[team_id] = 0
+
+    if not (declarer_at_ace and (game_just_won or ace_reset or ace_loser_ace_bomb)):
+        for p in declarer_team:
+            levels[p] = get_next_level(levels[p], level_up)
+            if levels[p] not in LEVEL_SEQUENCE:
+                levels[p] = ace_level
+
+    if first in losers_team:
+        for p in losers_team:
+            levels[p] = get_next_level(levels[p], level_up)
+            if levels[p] not in LEVEL_SEQUENCE:
+                levels[p] = ace_level
+        declarer_team = losers_team
+        if all(levels[p] == ace_level for p in declarer_team):
+            team_id = 0 if declarer_team == teamA else 1
+            ace_attempts[team_id] = 0
+
+    room['levels'] = levels
+    room['ace_attempts'] = ace_attempts
+    room['winning_team'] = declarer_team
+    room['win_type'] = win_type
+    room['level_up'] = level_up
+
+    print(f"[ROUND RESULT] Win type: {win_type}, Declarer team: {declarer_team}, Levels: {levels}")
+
+    return {
+        "game_over": game_just_won,
+        "winning_team": declarer_team,
+        "win_type": win_type,
+        "levels": dict(levels),
+        "ace_attempts": dict(ace_attempts)
+    }
 
 def determine_tributes(room):
     finish_order = room.get('game', {}).get('finish_order', [])
@@ -382,7 +483,7 @@ def start_new_game_round(room_id):
 
     hands = []
     for _ in range(len(players)):
-        hand = [deck.pop() for _ in range(3)]
+        hand = [deck.pop() for _ in range(1)]
         hands.append(hand)
     for player, hand in zip(players, hands):
         set_player_hand(room_id, player, hand)
