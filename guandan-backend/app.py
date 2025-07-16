@@ -331,7 +331,7 @@ def handle_register_sid(data):
     sid = request.sid
     if room_id in rooms and username:
         rooms[room_id].setdefault('sids', {})[username] = sid
-        join_room(room_id, sid=sid)  # Critical: ensure this socket is in the room for broadcasts!
+        sio_join_room(room_id, sid=sid)  # Critical: ensure this socket is in the room for broadcasts!
         print(f"[SID] Registered sid for {username} in room {room_id}: {sid}")
         room = rooms[room_id]
         players = room.get("players", [])
@@ -403,6 +403,13 @@ def handle_start_game(data):
 
 def start_new_game_round(room_id):
     room = rooms[room_id]
+    room["finish_order"] = []
+    if "game" in room:
+        room["game"]["finish_order"] = []
+    # If you track custom UI statuses:
+    if "player_status" in room:
+        room["player_status"] = {p: None for p in room.get("players", [])}
+
     slots = room["slots"]
     players = [u for u in slots if u]
     room["players"] = players
@@ -411,7 +418,7 @@ def start_new_game_round(room_id):
 
     hands = []
     for _ in range(len(players)):
-        hand = [deck.pop() for _ in range(2)]
+        hand = [deck.pop() for _ in range(3)]
         hands.append(hand)
     for player, hand in zip(players, hands):
         set_player_hand(room_id, player, hand)
@@ -530,7 +537,7 @@ def start_new_game_round(room_id):
 
     hands = []
     for _ in range(len(players)):
-        hand = [deck.pop() for _ in range(2)]
+        hand = [deck.pop() for _ in range(3)]
         hands.append(hand)
     for player, hand in zip(players, hands):
         set_player_hand(room_id, player, hand)
@@ -638,7 +645,10 @@ def handle_play_cards(data):
         emit('error_msg', "Not your turn!", room=request.sid)
         return
 
-    player_hand = rooms[room_id]['hands'][username][:]
+    # Copy the player's hand for reference
+    player_hand = rooms[room_id]['hands'][username]
+
+    # --- VALIDATE HAND TYPE FIRST ---
     this_type = hand_type(cards, game['levelRank'], game['trumpSuit'], game['wildCards'])
     if not this_type:
         emit('error_msg', "Invalid hand type!", room=request.sid)
@@ -650,20 +660,32 @@ def handle_play_cards(data):
             emit('error_msg', "Your play must beat the previous hand.", room=request.sid)
             return
 
+    # --- Build a list of indexes to remove ---
+    hand_indexes_to_remove = []
+    hand_copy = list(player_hand)  # Copy for matching
+    for play_card in cards:
+        if play_card in hand_copy:
+            idx = hand_copy.index(play_card)
+            hand_indexes_to_remove.append(idx)
+            hand_copy[idx] = None  # Mark as used
+        else:
+            # Try to use a wild if possible
+            wilds = find_wilds(hand_copy, game['levelRank'], game['trumpSuit'], game['wildCards'])
+            if wilds:
+                wild_idx = hand_copy.index(wilds[0])
+                hand_indexes_to_remove.append(wild_idx)
+                hand_copy[wild_idx] = None
+            else:
+                emit('error_msg', "You do not have the cards you're trying to play.", room=request.sid)
+                return
+
+    # --- Remove the selected cards from the original hand, preserving order ---
+    for idx in sorted(hand_indexes_to_remove, reverse=True):
+        del player_hand[idx]
+
     print(f"[PLAY_CARDS] {username} played: {cards} | Type: {this_type[0]}")
 
-    for card in cards:
-        if card in player_hand:
-            player_hand.remove(card)
-        else:
-            for w in find_wilds(player_hand, game['levelRank'], game['trumpSuit'], game['wildCards']):
-                if w in player_hand:
-                    player_hand.remove(w)
-                    break
-
     rooms[room_id]['hands'][username] = player_hand
-
-    # PATCH: Broadcast all hands after any hand change
     deal_to_all_players(room_id)
 
     game['current_play'] = {'player': username, 'cards': cards}
@@ -701,6 +723,7 @@ def handle_play_cards(data):
     else:
         print("[NEXT TURN] No next player found, emitting null update")
         emit_game_update(room_id, current_player=None, play_type=play_type_label)
+
 
 
 @socketio.on('pass_turn')

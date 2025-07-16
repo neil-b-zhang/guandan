@@ -155,8 +155,8 @@ export default function App() {
   const [trumpSuit, setTrumpSuit] = useState("hearts");
   const [startingLevels, setStartingLevels] = useState(["2","2","2","2"]);
   const [hands, setHands] = useState({});
-  const [errorMsg, setErrorMsg] = useState("");
   const [handOrder, setHandOrder] = useState([]);
+  const [errorMsg, setErrorMsg] = useState("");
   const [tributeState, setTributeState] = useState(null);
   const [finishOrder, setFinishOrder] = useState([]);
   const [gamePhase, setGamePhase] = useState("lobby"); // "lobby" | "game" | "hand_over"
@@ -165,19 +165,6 @@ export default function App() {
   const prevHandLength = useRef(0);
   const [roundNumber, setRoundNumber] = useState(1);
   const [currentLevelRank, setCurrentLevelRank] = useState("2");
-
-
-  useEffect(() => {
-    // Only reset handOrder when a NEW hand is dealt (length increases)
-    if (playerHand.length > 0 && playerHand.length !== prevHandLength.current) {
-      // Sort the new hand by rank for first deal, or whatever order you want
-      setHandOrder([...playerHand].sort((a, b) => cardSortKey(a, levelRank) - cardSortKey(b, levelRank)));
-      prevHandLength.current = playerHand.length;
-    }
-    // If playerHand is emptied, reset prevHandLength
-    if (playerHand.length === 0) prevHandLength.current = 0;
-    // eslint-disable-next-line
-  }, [playerHand, levelRank]);
 
   // Keep lobbyInfo ref updated
   useEffect(() => { lobbyInfoRef.current = lobbyInfo; }, [lobbyInfo]);
@@ -247,6 +234,7 @@ export default function App() {
 
     // ---- Game Start
     s.on("game_started", data => {
+      setFinishOrder([]);
       setCurrentPlayer(data.current_player);
       setCurrentPlay(null);
       setLastPlayType(null);
@@ -263,17 +251,32 @@ export default function App() {
       setStartingLevels((data.startingLevels) || ["2","2","2","2"]);
       setLevelRank((data.levelRank) || "2");
       setHands(data.hands || {});
+      if (data.hands && lobbyInfoRef.current?.username) {
+        const startHand = data.hands[lobbyInfoRef.current.username] || [];
+        // Sort by your desired sort order (rank, suit, whatever)
+        setHandOrder([...startHand].sort((a, b) => cardSortKey(a, levelRank) - cardSortKey(b, levelRank)));
+      }
       setGamePhase("game");
     });
 
-      // ---- Handle the all_hands broadcast: update *your* hand only
+    // ---- Handle the all_hands broadcast: update *your* hand only
     s.on("all_hands", data => {
       console.log("[SOCKET] all_hands event received", data);
       if (lobbyInfoRef.current) {
         const username = lobbyInfoRef.current.username;
         if (data.hands && data.hands[username]) {
           setPlayerHand(data.hands[username]);
-          setHandOrder(data.hands[username]);
+          setHandOrder(prevOrder => {
+            // If first time, new deal, or hand size changed a lot (deal/tribute), reset to backend order:
+            if (
+              prevOrder.length === 0 ||
+              Math.abs(prevOrder.length - data.hands[username].length) > 2
+            ) {
+              return data.hands[username];
+            }
+            // Otherwise, keep previous order, just remove any cards that are no longer in hand:
+            return prevOrder.filter(card => data.hands[username].includes(card));
+          });
         }
       }
     });
@@ -422,19 +425,15 @@ export default function App() {
     if (!socket || !lobbyInfo) return;
     const { roomId, username } = lobbyInfo;
     if (selectedCards.length === 0) return;
-    // Send the actual selected card values in order, using idx for accuracy
     socket.emit("play_cards", {
       roomId,
       username,
-      cards: selectedCards.map(sel => handOrder[sel.idx]) // or sel.card if your backend expects only card names
+      cards: selectedCards.map(sel => handOrder[sel.idx])
     });
-    setHandOrder(
-      handOrder.filter((_, idx) =>
-        !selectedCards.some(sel => sel.idx === idx)
-      )
-    );
-    setSelectedCards([]);
+    setSelectedCards([]); // Just clear the selection
+    // (No local hand mutation here!)
   };
+
 
   const passTurn = () => {
     if (!socket || !lobbyInfo) return;
