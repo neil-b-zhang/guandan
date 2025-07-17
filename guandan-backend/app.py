@@ -24,6 +24,7 @@ log.setLevel(logging.ERROR)
 
 LEVEL_SEQUENCE = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 SUIT_OPTIONS = ['hearts', 'spades', 'diamonds', 'clubs']
+CARD_RANK_ORDER = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A', '2', 'JoB', 'JoR']
 
 # --- (all your helper functions and class code goes here, unmodified) ---
 
@@ -36,6 +37,14 @@ def level_index(lv):
 def get_next_level(current, up):
     idx = min(level_index(current) + up, len(LEVEL_SEQUENCE) - 1)
     return LEVEL_SEQUENCE[idx]
+
+def getCardRank(card):
+    if card in ("JoB", "JoR"):
+        return card
+    if len(card) == 3:
+        return card[:2]
+    return card[0]
+
 
 def player_is_finished(room_id, player):
     return len(rooms[room_id]['hands'][player]) == 0
@@ -248,6 +257,41 @@ def emit_game_update(room_id, current_player, play_type=None, can_end_round=Fals
         'finish_order': game.get('finish_order', [])
     }, room=room_id)
 
+def determine_starting_player(room):
+    tribute_state = room.get('tribute_state')
+    finish_order = room.get('last_finish_order', [])
+    players = room.get('players', [])
+
+    if tribute_state and not tribute_state.get('blocked'):
+        tribute_cards = tribute_state.get('tribute_cards', {})
+        tributes = tribute_state.get('tributes', [])
+
+        if len(tributes) == 2:
+            # 1-2 win: compare the two tribute cards
+            from1 = tributes[0]['from']
+            from2 = tributes[1]['from']
+            card1 = tribute_cards.get(from1)
+            card2 = tribute_cards.get(from2)
+            if card1 and card2:
+                r1 = CARD_RANK_ORDER.index(getCardRank(card1))
+                r2 = CARD_RANK_ORDER.index(getCardRank(card2))
+                if r1 > r2:
+                    return from1
+                elif r2 > r1:
+                    return from2
+                else:
+                    # Tie: let them decide — fallback to first
+                    return from1
+        elif len(tributes) == 1:
+            # 1-3 or 1-4: only one payer
+            return tributes[0]['from']
+
+    # Tribute blocked or no tribute — fallback to first finisher
+    if finish_order:
+        return finish_order[0]
+    return players[0] if players else None
+
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -436,16 +480,17 @@ def initiate_tribute_phase(room_id):
     teams = room["teams"]
     teamA = set(teams[0])
     teamB = set(teams[1])
-    all_players = set(room["players"])
+    players = room["players"]
+    hands = room.get("hands", {})
 
     tribute_state = {
-         "step": "pay",
+        "step": "pay",
         "payers": [],
         "recipients": [],
         "tributes": [],
-        "tribute_cards": {},       # ✅ REQUIRED so backend can store tribute submissions
-        "exchange_cards": {},      # ✅ Also needed for return step later
-        "return_cards": {},        # optional/unused (legacy key you can remove later)
+        "tribute_cards": {},
+        "exchange_cards": {},
+        "return_cards": {},
         "blockable": False,
         "blocked": False,
         "type": "",
@@ -453,12 +498,12 @@ def initiate_tribute_phase(room_id):
     }
 
     first, second = last_finish_order[0], last_finish_order[1]
-
     same_team_win = (first in teamA and second in teamA) or (first in teamB and second in teamB)
 
     if same_team_win:
+        # 1-2 WIN: Both losers pay tribute
         winners = [first, second]
-        losers = [p for p in room["players"] if p not in winners]
+        losers = [p for p in players if p not in winners]
 
         if len(losers) != 2:
             print("[TRIBUTE ERROR] Expected exactly 2 losers, got:", losers)
@@ -474,27 +519,43 @@ def initiate_tribute_phase(room_id):
         tribute_state["type"] = "1-2"
         tribute_state["info"] = "Both losers must pay tribute to 1st and 2nd place players."
 
+        # 🔴 Block tribute if each loser has one red joker
+        red_jokers = ["JoR"]
+        red_joker_holders = [p for p in losers if any(c in red_jokers for c in hands.get(p, []))]
+        if len(red_joker_holders) == 2:
+            print("[TRIBUTE BLOCKED] Both losers have red jokers. Tribute canceled.")
+            tribute_state["step"] = "blocked"
+            tribute_state["blocked"] = True
+            room["tribute_state"] = tribute_state
+            socketio.emit("tribute_start", tribute_state, room=room_id)
+            return
+
     else:
+        # 1-3 or 1-4 WIN: Only last-place loser pays tribute
         last = last_finish_order[-1]
         tribute_state["payers"] = [last]
         tribute_state["recipients"] = [first]
-        tribute_state["tributes"] = [
-            {"from": last, "to": first}
-        ]
+        tribute_state["tributes"] = [{"from": last, "to": first}]
         tribute_state["blockable"] = True
 
-        if len(set(last_finish_order[:3])) == 3:
-            tribute_state["type"] = "1-3"
-            tribute_state["info"] = "Last place must pay tribute to 1st place player."
-        else:
-            tribute_state["type"] = "1-4"
-            tribute_state["info"] = "Last place must pay tribute to 1st place player."
+        tribute_type = "1-3" if len(set(last_finish_order[:3])) == 3 else "1-4"
+        tribute_state["type"] = tribute_type
+        tribute_state["info"] = "Last place must pay tribute to 1st place player."
+
+        # 🔴 Block tribute if last player has TWO red jokers
+        red_jokers = ["JoR"]
+        player_hand = hands.get(last, [])
+        if player_hand.count("JoR") >= 2:
+            print(f"[TRIBUTE BLOCKED] {last} has two red jokers. Tribute canceled.")
+            tribute_state["step"] = "blocked"
+            tribute_state["blocked"] = True
+            room["tribute_state"] = tribute_state
+            socketio.emit("tribute_start", tribute_state, room=room_id)
+            return
 
     room["tribute_state"] = tribute_state
     print(f"[TRIBUTE] Tribute phase started. State: {tribute_state}")
     socketio.emit("tribute_start", tribute_state, room=room_id)
-
-
 
 def start_new_game_round(room_id):
     room = rooms[room_id]
@@ -528,10 +589,11 @@ def start_new_game_round(room_id):
     trump_suit = room["settings"].get("trumpSuit", "hearts")
     wild_cards = room["settings"].get("wildCards", True)
     room['round_number'] = room.get('round_number', 0) + 1
-
+    turn_index = 0
+    
     game = {
         'players': players,
-        'turn_index': 0,
+        'turn_index': turn_index,
         'current_play': None,
         'round_active': True,
         'passes': [],
@@ -549,7 +611,7 @@ def start_new_game_round(room_id):
 
     emit('game_started', {
         "roomId": room_id,
-        "current_player": players[0],
+        "current_player": players[turn_index],
         "levels": levels,
         "teams": teams,
         "slots": slots,
@@ -918,7 +980,18 @@ def handle_return_tribute(data):
                 print("[TRIBUTE ERROR] Card transfer failed:", e)
                 emit("error_msg", f"Card transfer failed: {e}", room=room_id)
 
-        socketio.emit('tribute_complete', {'tribute_state': tribute_state, 'hands': hands}, room=room_id)
+        # ✅ Set starting player AFTER tribute
+        starting_player = determine_starting_player(room)
+        print(f"[STARTING PLAYER] After tribute: {starting_player}")
+        room['game']['turn_index'] = room['players'].index(starting_player)
+        
+        socketio.emit('tribute_complete', {
+            'tribute_state': tribute_state,
+            'hands': hands
+        }, room=room_id)
+
+        emit_game_update(room_id, current_player=starting_player)
+
         room['tribute_state'] = None
     else:
         print(f"[RETURN TRIBUTE] Still waiting on other returns.")
@@ -926,12 +999,11 @@ def handle_return_tribute(data):
 
 
 
+
 @socketio.on('connect')
 def handle_connect():
     print('A client connected, sid:', request.sid)
     emit('message', {'msg': 'Connected to Guandan server!'})
-
-import threading
 
 @socketio.on('disconnect')
 def handle_disconnect():

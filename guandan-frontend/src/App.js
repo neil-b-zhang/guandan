@@ -1449,14 +1449,33 @@ function TributeOverlay({
   const [selectedCard, setSelectedCard] = React.useState(null);
   const roomId = lobbyInfo?.roomId;
 
-  if (!tributeState || !lobbyInfo) return null;
 
   const { tributes, tribute_cards = {}, exchange_cards = {}, step } = tributeState;
   const myHand = hands && playerName ? hands[playerName] : [];
   const username = playerName;
 
+  // ✅ Safe useEffect outside conditional
+  React.useEffect(() => {
+    if (step === "blocked") {
+      const timer = setTimeout(() => setTributeState(null), 3500);
+      return () => clearTimeout(timer);
+    }
+  }, [step]);
+
+  if (!tributeState || !lobbyInfo) return null;
+
+  // --- Tribute Blocked Step ---
+  if (step === "blocked") {
+    return (
+      <div className="tribute-modal">
+        <h3>Tribute Canceled</h3>
+        <p>Losing team has BOTH Red Jokers. Tribute phase cancelled!</p>
+      </div>
+    );
+  }
+
   // --- Tribute Payment Step ---
-  if (step === 'pay') {
+  if (step === "pay") {
     const myTribute = tributes && tributes.find(t => t.from === username);
     if (myTribute && !tribute_cards[username]) {
       return (
@@ -1481,8 +1500,8 @@ function TributeOverlay({
           <button
             disabled={!selectedCard}
             onClick={() => {
-              socket.emit('pay_tribute', {
-                roomId: lobbyInfo.roomId,
+              socket.emit("pay_tribute", {
+                roomId,
                 from: username,
                 card: selectedCard
               });
@@ -1505,8 +1524,7 @@ function TributeOverlay({
   }
 
   // --- Tribute Return Step ---
-  if (step === 'return') {
-    // I'm a tribute recipient — I need to return a card to whoever gave me one
+  if (step === "return") {
     const myReturn = tributes && tributes.find(t => t.to === username);
     const alreadyReturned = !!exchange_cards[username];
 
@@ -1538,8 +1556,10 @@ function TributeOverlay({
                 return;
               }
 
-              console.log(`[TRIBUTE RETURN] ${username} returning card ${selectedCard} to ${myReturn.from} in room ${roomId}`);
-              socket.emit('return_tribute', {
+              console.log(
+                `[TRIBUTE RETURN] ${username} returning card ${selectedCard} to ${myReturn.from} in room ${roomId}`
+              );
+              socket.emit("return_tribute", {
                 roomId,
                 from: username,
                 to: myReturn.from,
@@ -1559,11 +1579,11 @@ function TributeOverlay({
         </div>
       );
     } else {
-      return <div className="tribute-modal">Waiting for all tribute returns...</div>;
+      return (
+        <div className="tribute-modal">Waiting for all tribute returns...</div>
+      );
     }
   }
-
-
   // ✅ Add final fallback return
   return null;
 }
