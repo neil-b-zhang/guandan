@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: guandan-backend
+    env: python
+    region: oregon  # Or choose 'frankfurt' for EU users
+    plan: free
+    buildCommand: ""
+    startCommand: gunicorn app:app --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT
+    envVars:
+      - key: FLASK_ENV
+        value: production

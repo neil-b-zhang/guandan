@@ -1129,6 +1129,9 @@ def handle_end_of_hand(room_id, play_type_label):
     room['last_finish_order'] = list(game.get('finish_order', []))
     del rooms[room_id]["game"]
 
+#if __name__ == "__main__":
+#    print("Starting Guandan backend with async_mode =", socketio.async_mode)
+#    socketio.run(app, host="127.0.0.1", port=5000)
+
 if __name__ == "__main__":
-    print("Starting Guandan backend with async_mode =", socketio.async_mode)
-    socketio.run(app, host="127.0.0.1", port=5000)
+    socketio.run(app, host="0.0.0.0", port=10000)
