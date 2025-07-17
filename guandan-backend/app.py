@@ -425,8 +425,10 @@ def handle_deal_hand(data):
 def initiate_tribute_phase(room_id):
     room = rooms[room_id]
     print("[DEBUG] Initiate tribute phase called for", room_id)
+    
     last_finish_order = room.get("last_finish_order") or room.get("game", {}).get("finish_order", [])
     print("[DEBUG] last_finish_order:", last_finish_order)
+    
     if not last_finish_order or len(last_finish_order) < 2:
         print("[TRIBUTE] No valid finish order; skipping tribute phase.")
         return
@@ -434,23 +436,34 @@ def initiate_tribute_phase(room_id):
     teams = room["teams"]
     teamA = set(teams[0])
     teamB = set(teams[1])
+    all_players = set(room["players"])
 
     tribute_state = {
-        "step": "pay",
+         "step": "pay",
         "payers": [],
         "recipients": [],
-        "tributes": [],  
-        "return_cards": {},
+        "tributes": [],
+        "tribute_cards": {},       # ✅ REQUIRED so backend can store tribute submissions
+        "exchange_cards": {},      # ✅ Also needed for return step later
+        "return_cards": {},        # optional/unused (legacy key you can remove later)
         "blockable": False,
         "blocked": False,
         "type": "",
         "info": "",
     }
 
-    if (last_finish_order[0] in teamA and last_finish_order[1] in teamA) or \
-       (last_finish_order[0] in teamB and last_finish_order[1] in teamB):
-        losers = [last_finish_order[-1], last_finish_order[-2]]
-        winners = [last_finish_order[0], last_finish_order[1]]
+    first, second = last_finish_order[0], last_finish_order[1]
+
+    same_team_win = (first in teamA and second in teamA) or (first in teamB and second in teamB)
+
+    if same_team_win:
+        winners = [first, second]
+        losers = [p for p in room["players"] if p not in winners]
+
+        if len(losers) != 2:
+            print("[TRIBUTE ERROR] Expected exactly 2 losers, got:", losers)
+            return
+
         tribute_state["payers"] = losers
         tribute_state["recipients"] = winners
         tribute_state["tributes"] = [
@@ -460,13 +473,16 @@ def initiate_tribute_phase(room_id):
         tribute_state["blockable"] = True
         tribute_state["type"] = "1-2"
         tribute_state["info"] = "Both losers must pay tribute to 1st and 2nd place players."
+
     else:
-        tribute_state["payers"] = [last_finish_order[-1]]
-        tribute_state["recipients"] = [last_finish_order[0]]
+        last = last_finish_order[-1]
+        tribute_state["payers"] = [last]
+        tribute_state["recipients"] = [first]
         tribute_state["tributes"] = [
-            {"from": last_finish_order[-1], "to": last_finish_order[0]}
+            {"from": last, "to": first}
         ]
         tribute_state["blockable"] = True
+
         if len(set(last_finish_order[:3])) == 3:
             tribute_state["type"] = "1-3"
             tribute_state["info"] = "Last place must pay tribute to 1st place player."
@@ -475,7 +491,6 @@ def initiate_tribute_phase(room_id):
             tribute_state["info"] = "Last place must pay tribute to 1st place player."
 
     room["tribute_state"] = tribute_state
-
     print(f"[TRIBUTE] Tribute phase started. State: {tribute_state}")
     socketio.emit("tribute_start", tribute_state, room=room_id)
 
@@ -685,7 +700,6 @@ def handle_play_cards(data):
         emit_game_update(room_id, current_player=None, play_type=play_type_label)
 
 
-
 @socketio.on('pass_turn')
 def handle_pass_turn(data):
     room_id = data.get('roomId')
@@ -807,6 +821,10 @@ def handle_end_round(data):
 @socketio.on('pay_tribute')
 def handle_pay_tribute(data):
     room_id = data['roomId']
+    if not room_id:
+        print("[TRIBUTE ERROR] pay_tribute missing roomId:", data)
+        return
+
     from_player = data['from']
     card = data['card']
     room = rooms.get(room_id)
@@ -818,12 +836,20 @@ def handle_pay_tribute(data):
         return
 
     tribute_state['tribute_cards'][from_player] = card
+    print(f"[TRIBUTE PAY] {from_player} paid tribute with {card}")
+    print(f"[TRIBUTE STATE] tribute_cards now: {tribute_state['tribute_cards']}")
 
-    if len(tribute_state['tribute_cards']) == len(tribute_state['tributes']):
+
+    tribute_givers = [t['from'] for t in tribute_state['tributes']]
+    all_paid = all(p in tribute_state['tribute_cards'] for p in tribute_givers)
+
+    if all_paid:
         tribute_state['step'] = 'return'
+        print("[TRIBUTE] All tribute cards received. Prompting for returns.")
         socketio.emit('tribute_prompt_return', {'tribute_state': tribute_state}, room=room_id)
     else:
         socketio.emit('tribute_update', {'tribute_state': tribute_state}, room=room_id)
+
 
 @socketio.on('return_tribute')
 def handle_return_tribute(data):
@@ -832,40 +858,73 @@ def handle_return_tribute(data):
     to_player = data['to']
     card = data['card']
     room = rooms.get(room_id)
+
+    print(f"[RETURN TRIBUTE] Received return_tribute from {from_player} to {to_player} with card {card} in room {room_id}")
+
     if not room:
+        print(f"[RETURN ERROR] Room {room_id} not found.")
         return
 
     tribute_state = room.get('tribute_state')
     if not tribute_state:
+        print(f"[RETURN ERROR] No tribute state found for room {room_id}")
         return
 
+    # Log before storing
+    print(f"[RETURN TRIBUTE] Current tribute state before storing:")
+    print(f"  Exchange cards: {tribute_state.get('exchange_cards')}")
+    print(f"  Tribute cards: {tribute_state.get('tribute_cards')}")
+    print(f"  Expected returns from (tribute recipients): {[t['to'] for t in tribute_state['tributes']]}")
+    print(f"  This player: {from_player}")
+
+    # Store the card returned by recipient
     tribute_state['exchange_cards'][from_player] = {'to': to_player, 'card': card}
 
-    if len(tribute_state['exchange_cards']) == len(tribute_state['tributes']):
+    print(f"[RETURN TRIBUTE] Stored return: {from_player} -> {to_player}: {card}")
+    print(f"[RETURN TRIBUTE] Updated exchange_cards: {tribute_state['exchange_cards']}")
+
+    # Check if all tribute recipients (the 'to' players) have returned cards
+    tribute_recipients = [t['to'] for t in tribute_state['tributes']]
+    all_returned = all(r in tribute_state['exchange_cards'] for r in tribute_recipients)
+
+    if all_returned:
+        print(f"[RETURN TRIBUTE] All returns received. Performing final card swap.")
         tribute_state['step'] = 'done'
         hands = room['hands']
 
         for t in tribute_state['tributes']:
-            from_player = t['from']
-            to_player = t['to']
-            tribute_card = tribute_state['tribute_cards'][from_player]
-            return_card = tribute_state['exchange_cards'][to_player]['card']
+            payer = t['from']
+            recipient = t['to']
+            tribute_card = tribute_state['tribute_cards'].get(payer)
+            return_entry = tribute_state['exchange_cards'].get(recipient)
+
+            if not tribute_card or not return_entry:
+                print(f"[TRIBUTE ERROR] Missing tribute or return for: {payer}")
+                continue
+
+            return_card = return_entry['card']
 
             if tribute_card == return_card:
+                print(f"[TRIBUTE SKIP] Tribute and return cards are the same for {payer}.")
                 continue
 
             try:
-                hands[from_player].remove(tribute_card)
-                hands[to_player].remove(return_card)
-                hands[from_player].append(return_card)
-                hands[to_player].append(tribute_card)
+                hands[payer].remove(tribute_card)
+                hands[recipient].remove(return_card)
+                hands[payer].append(return_card)
+                hands[recipient].append(tribute_card)
+                print(f"[TRIBUTE SWAP] Swapped {tribute_card} -> {recipient}, {return_card} -> {payer}")
             except Exception as e:
-                print("[TRIBUTE] Card transfer error:", e)
+                print("[TRIBUTE ERROR] Card transfer failed:", e)
+                emit("error_msg", f"Card transfer failed: {e}", room=room_id)
 
         socketio.emit('tribute_complete', {'tribute_state': tribute_state, 'hands': hands}, room=room_id)
         room['tribute_state'] = None
     else:
+        print(f"[RETURN TRIBUTE] Still waiting on other returns.")
         socketio.emit('tribute_update', {'tribute_state': tribute_state}, room=room_id)
+
+
 
 @socketio.on('connect')
 def handle_connect():

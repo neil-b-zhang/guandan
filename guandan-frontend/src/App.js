@@ -353,14 +353,25 @@ export default function App() {
 
     // === Tribute handlers ===
     s.on("tribute_start", (data) => {
-      console.log("[FRONTEND] Tribute phase begins:", data);
-      setTributeState(data)
+      console.log("[SOCKET] tribute_start received", data);
+      setTributeState(data);
     });
+    s.on("tribute_prompt_return", (data) => {
+      console.log("[SOCKET] tribute_prompt_return received", data);
+      setTributeState(data.tribute_state);
+    });
+
     s.on("tribute_update", (data) => setTributeState(data.tribute_state));
-    s.on("tribute_prompt_return", (data) => setTributeState(data.tribute_state));
     s.on("tribute_complete", (data) => {
-      setTributeState(null);
-      setHands(data.hands || {});
+      console.log("[SOCKET] tribute_complete received", data);
+      setTributeState(null);  // clear modal
+      if (data.hands && lobbyInfoRef.current?.username) {
+        const updatedHand = data.hands[lobbyInfoRef.current.username];
+        if (updatedHand) {
+          setPlayerHand(updatedHand);
+          setHandOrder([...updatedHand].sort((a, b) => cardSortKey(a, levelRank) - cardSortKey(b, levelRank)));
+        }
+      }
     });
 
     // ---- Game End
@@ -554,6 +565,7 @@ export default function App() {
           socket={socket}
           playerName={lobbyInfo?.username}
           hands={hands}
+          lobbyInfo={lobbyInfo}
         />
       )}
         <h2>Game Over!</h2>
@@ -827,6 +839,7 @@ export default function App() {
             socket={socket}
             playerName={lobbyInfo?.username}
             hands={hands}
+            lobbyInfo={lobbyInfo}
           />
         </>
       );
@@ -1425,26 +1438,65 @@ function CardImg({ card, trumpSuit, levelRank, wildCards, onClick, highlightWild
   );
 }
 
-function TributeOverlay({ tributeState, setTributeState, socket, playerName, hands }) {
-  if (!tributeState) return null;
+function TributeOverlay({
+  tributeState,
+  setTributeState,
+  socket,
+  playerName,
+  hands,
+  lobbyInfo
+}) {
+  const [selectedCard, setSelectedCard] = React.useState(null);
+  const roomId = lobbyInfo?.roomId;
+
+  if (!tributeState || !lobbyInfo) return null;
+
   const { tributes, tribute_cards = {}, exchange_cards = {}, step } = tributeState;
   const myHand = hands && playerName ? hands[playerName] : [];
+  const username = playerName;
 
-  // Tribute payment step
+  // --- Tribute Payment Step ---
   if (step === 'pay') {
-    const myTribute = tributes && tributes.find(t => t.from === playerName);
-    if (myTribute && !tribute_cards[playerName]) {
+    const myTribute = tributes && tributes.find(t => t.from === username);
+    if (myTribute && !tribute_cards[username]) {
       return (
         <div className="tribute-modal">
           <h3>You must pay tribute to {myTribute.to}</h3>
           <p>Select your highest card that is not a wild (see rules)</p>
           <div>
             {myHand.map(card => (
-              <button key={card} onClick={() => {
-                socket.emit('pay_tribute', { roomId: tributeState.roomId, from: playerName, card });
-              }}>{card}</button>
+              <button
+                key={card}
+                style={{
+                  margin: 2,
+                  background: selectedCard === card ? "#005fff" : "#f6f6f6",
+                  color: selectedCard === card ? "#fff" : "#222"
+                }}
+                onClick={() => setSelectedCard(card)}
+              >
+                {card}
+              </button>
             ))}
           </div>
+          <button
+            disabled={!selectedCard}
+            onClick={() => {
+              socket.emit('pay_tribute', {
+                roomId: lobbyInfo.roomId,
+                from: username,
+                card: selectedCard
+              });
+              setSelectedCard(null);
+            }}
+            style={{
+              marginTop: 12,
+              padding: "8px 18px",
+              borderRadius: 5,
+              fontWeight: 600
+            }}
+          >
+            Submit Tribute
+          </button>
         </div>
       );
     } else {
@@ -1452,21 +1504,58 @@ function TributeOverlay({ tributeState, setTributeState, socket, playerName, han
     }
   }
 
-  // Return step (winners return a card to the tribute-payer)
+  // --- Tribute Return Step ---
   if (step === 'return') {
-    const myReturn = tributes && tributes.find(t => t.to === playerName);
-    if (myReturn && !exchange_cards[playerName]) {
+    // I'm a tribute recipient — I need to return a card to whoever gave me one
+    const myReturn = tributes && tributes.find(t => t.to === username);
+    const alreadyReturned = !!exchange_cards[username];
+
+    if (myReturn && !alreadyReturned) {
       return (
         <div className="tribute-modal">
           <h3>You must return a card to {myReturn.from}</h3>
           <p>Select any card (not the one just received from tribute)</p>
           <div>
             {myHand.map(card => (
-              <button key={card} onClick={() => {
-                socket.emit('return_tribute', { roomId: tributeState.roomId, from: playerName, to: myReturn.from, card });
-              }}>{card}</button>
+              <button
+                key={card}
+                style={{
+                  margin: 2,
+                  background: selectedCard === card ? "#005fff" : "#f6f6f6",
+                  color: selectedCard === card ? "#fff" : "#222"
+                }}
+                onClick={() => setSelectedCard(card)}
+              >
+                {card}
+              </button>
             ))}
           </div>
+          <button
+            disabled={!selectedCard}
+            onClick={() => {
+              if (!roomId) {
+                console.warn("[TRIBUTE RETURN] Missing roomId — cannot emit!");
+                return;
+              }
+
+              console.log(`[TRIBUTE RETURN] ${username} returning card ${selectedCard} to ${myReturn.from} in room ${roomId}`);
+              socket.emit('return_tribute', {
+                roomId,
+                from: username,
+                to: myReturn.from,
+                card: selectedCard
+              });
+              setSelectedCard(null);
+            }}
+            style={{
+              marginTop: 12,
+              padding: "8px 18px",
+              borderRadius: 5,
+              fontWeight: 600
+            }}
+          >
+            Return Card
+          </button>
         </div>
       );
     } else {
@@ -1474,14 +1563,7 @@ function TributeOverlay({ tributeState, setTributeState, socket, playerName, han
     }
   }
 
-  // Done
-  if (step === 'done') {
-    return <div className="tribute-modal">Tribute complete! Dealing new cards...</div>;
-  }
 
-  // Default
+  // ✅ Add final fallback return
   return null;
 }
-
-
-
