@@ -590,7 +590,7 @@ def start_new_game_round(room_id):
     wild_cards = room["settings"].get("wildCards", True)
     room['round_number'] = room.get('round_number', 0) + 1
     turn_index = 0
-    
+
     game = {
         'players': players,
         'turn_index': turn_index,
@@ -954,6 +954,27 @@ def handle_return_tribute(data):
         tribute_state['step'] = 'done'
         hands = room['hands']
 
+        # --- Check for 1-2 tribute tie and trigger choice flow ---
+        if tribute_state['type'] == "1-2" and len(tribute_state['tributes']) == 2:
+            t1 = tribute_state['tributes'][0]
+            t2 = tribute_state['tributes'][1]
+            card1 = tribute_state['tribute_cards'].get(t1['from'])
+            card2 = tribute_state['tribute_cards'].get(t2['from'])
+
+            if card1 and card2 and getCardRank(card1) == getCardRank(card2):
+                # Tie detected — store both and trigger choice
+                tribute_state['step'] = 'choose'
+                tribute_state['tie_cards'] = [
+                    {'from': t1['from'], 'to': t1['to'], 'card': card1},
+                    {'from': t2['from'], 'to': t2['to'], 'card': card2}
+                ]
+                tribute_state['chooser'] = t1['to']  # 1st place player gets to choose
+                print(f"[TRIBUTE CHOICE] Tie detected. Prompting {t1['to']} to choose tribute.")
+                socketio.emit('tribute_prompt_choice', {
+                    'tribute_state': tribute_state
+                }, room=room_id)
+                return  # ⛔ wait for chooser to pick
+
         for t in tribute_state['tributes']:
             payer = t['from']
             recipient = t['to']
@@ -969,7 +990,7 @@ def handle_return_tribute(data):
             if tribute_card == return_card:
                 print(f"[TRIBUTE SKIP] Tribute and return cards are the same for {payer}.")
                 continue
-
+            
             try:
                 hands[payer].remove(tribute_card)
                 hands[recipient].remove(return_card)
@@ -997,8 +1018,61 @@ def handle_return_tribute(data):
         print(f"[RETURN TRIBUTE] Still waiting on other returns.")
         socketio.emit('tribute_update', {'tribute_state': tribute_state}, room=room_id)
 
+@socketio.on('tribute_choice_selected')
+def handle_tribute_choice(data):
+    room_id = data['roomId']
+    chosen_card = data['chosenCard']
+    room = rooms.get(room_id)
+    if not room or 'tribute_state' not in room:
+        return
 
+    tribute_state = room['tribute_state']
+    chooser = tribute_state.get('chooser')
+    tie_cards = tribute_state.get('tie_cards', [])
 
+    if not chooser or not tie_cards or not chosen_card:
+        print("[CHOICE ERROR] Invalid tribute choice state.")
+        return
+
+    # Determine which card was chosen
+    chosen_entry = next((t for t in tie_cards if t['card'] == chosen_card), None)
+    other_entry = next((t for t in tie_cards if t['card'] != chosen_card), None)
+
+    if not chosen_entry or not other_entry:
+        print("[CHOICE ERROR] Could not match chosen card.")
+        return
+
+    # Finalize tribute resolution
+    hands = room['hands']
+    try:
+        # Transfer tribute cards
+        hands[chosen_entry['from']].remove(chosen_entry['card'])
+        hands[chooser].remove(tribute_state['exchange_cards'][chooser]['card'])
+        hands[chooser].append(chosen_entry['card'])
+        hands[chosen_entry['from']].append(tribute_state['exchange_cards'][chooser]['card'])
+
+        hands[other_entry['from']].remove(other_entry['card'])
+        second_place = other_entry['to']
+        return_card_2 = tribute_state['exchange_cards'].get(second_place, {}).get('card')
+        hands[second_place].remove(return_card_2)
+        hands[second_place].append(other_entry['card'])
+        hands[other_entry['from']].append(return_card_2)
+
+    except Exception as e:
+        print("[CHOICE ERROR] Card transfer failed:", e)
+        emit("error_msg", f"Card swap failed: {e}", room=room_id)
+        return
+
+    tribute_state['step'] = 'done'
+    print(f"[TRIBUTE FINALIZED] {chooser} chose {chosen_card}. Tribute complete.")
+    room['tribute_state'] = None
+
+    socketio.emit('tribute_complete', {
+        'tribute_state': tribute_state,
+        'hands': hands
+    }, room=room_id)
+
+    emit_game_update(room_id, current_player=chooser)
 
 @socketio.on('connect')
 def handle_connect():

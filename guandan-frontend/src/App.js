@@ -1448,13 +1448,10 @@ function TributeOverlay({
 }) {
   const [selectedCard, setSelectedCard] = React.useState(null);
   const roomId = lobbyInfo?.roomId;
-
-
-  const { tributes, tribute_cards = {}, exchange_cards = {}, step } = tributeState;
+  const { tributes, tribute_cards = {}, exchange_cards = {}, step, chooser, tie_cards = [] } = tributeState;
   const myHand = hands && playerName ? hands[playerName] : [];
   const username = playerName;
 
-  // ✅ Safe useEffect outside conditional
   React.useEffect(() => {
     if (step === "blocked") {
       const timer = setTimeout(() => setTributeState(null), 3500);
@@ -1464,126 +1461,196 @@ function TributeOverlay({
 
   if (!tributeState || !lobbyInfo) return null;
 
-  // --- Tribute Blocked Step ---
-  if (step === "blocked") {
+  function renderCardButton(card, onClick, isSelected = false) {
     return (
-      <div className="tribute-modal">
-        <h3>Tribute Canceled</h3>
-        <p>Losing team has BOTH Red Jokers. Tribute phase cancelled!</p>
-      </div>
+      <img
+        key={card}
+        src={process.env.PUBLIC_URL + `/cards/${card}.svg`}
+        alt={card}
+        onClick={onClick}
+        style={{
+          width: 60,
+          height: 84,
+          margin: "6px",
+          borderRadius: 8,
+          border: isSelected ? "3px solid #005fff" : "1.5px solid #aaa",
+          boxShadow: isSelected ? "0 0 8px #005fff88" : "0 1px 4px #0002",
+          background: "#fff",
+          cursor: "pointer"
+        }}
+      />
     );
   }
 
-  // --- Tribute Payment Step ---
-  if (step === "pay") {
-    const myTribute = tributes && tributes.find(t => t.from === username);
-    if (myTribute && !tribute_cards[username]) {
-      return (
-        <div className="tribute-modal">
-          <h3>You must pay tribute to {myTribute.to}</h3>
-          <p>Select your highest card that is not a wild (see rules)</p>
-          <div>
-            {myHand.map(card => (
+  return (
+    <div className="tribute-modal" style={{
+      position: "fixed",
+      top: 0,
+      left: 0,
+      width: "100vw",
+      height: "100vh",
+      background: "rgba(0,0,0,0.6)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 9999,
+      padding: 20
+    }}>
+      <div style={{
+        background: "#fff",
+        borderRadius: 12,
+        padding: "20px 24px",
+        maxWidth: 500,
+        width: "100%",
+        boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
+        textAlign: "center"
+      }}>
+        {/* === Tribute BLOCKED === */}
+        {step === "blocked" && (
+          <>
+            <h2 style={{ color: "#aa0000" }}>Tribute Canceled</h2>
+            <p style={{ marginTop: 10 }}>
+              Losing team has BOTH Red Jokers. Tribute phase is skipped.
+            </p>
+          </>
+        )}
+
+        {/* === Tribute PAYMENT === */}
+        {step === "pay" && (() => {
+          const myTribute = tributes.find(t => t.from === username);
+          if (!myTribute) return <p>Waiting for other players to pay tribute...</p>;
+          if (tribute_cards[username]) return <p>Waiting for other tributes...</p>;
+
+          return (
+            <>
+              <h2>Pay Tribute to {myTribute.to}</h2>
+              <p>Select your highest card (excluding jokers or wilds)</p>
+              <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center" }}>
+                {myHand.map(card =>
+                  renderCardButton(card, () => setSelectedCard(card), selectedCard === card)
+                )}
+              </div>
               <button
-                key={card}
-                style={{
-                  margin: 2,
-                  background: selectedCard === card ? "#005fff" : "#f6f6f6",
-                  color: selectedCard === card ? "#fff" : "#222"
+                onClick={() => {
+                  socket.emit("pay_tribute", { roomId, from: username, card: selectedCard });
+                  setSelectedCard(null);
                 }}
-                onClick={() => setSelectedCard(card)}
+                disabled={!selectedCard}
+                style={{
+                  marginTop: 12,
+                  padding: "10px 20px",
+                  fontWeight: 600,
+                  background: "#005fff",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 8
+                }}
               >
-                {card}
+                Submit Tribute
               </button>
-            ))}
-          </div>
-          <button
-            disabled={!selectedCard}
-            onClick={() => {
-              socket.emit("pay_tribute", {
-                roomId,
-                from: username,
-                card: selectedCard
-              });
-              setSelectedCard(null);
-            }}
-            style={{
-              marginTop: 12,
-              padding: "8px 18px",
-              borderRadius: 5,
-              fontWeight: 600
-            }}
-          >
-            Submit Tribute
-          </button>
-        </div>
-      );
-    } else {
-      return <div className="tribute-modal">Waiting for all tributes...</div>;
-    }
-  }
+            </>
+          );
+        })()}
 
-  // --- Tribute Return Step ---
-  if (step === "return") {
-    const myReturn = tributes && tributes.find(t => t.to === username);
-    const alreadyReturned = !!exchange_cards[username];
+        {/* === Tribute RETURN === */}
+        {step === "return" && (() => {
+          const myReturn = tributes.find(t => t.to === username);
+          if (!myReturn) return <p>Waiting for others to return cards...</p>;
+          if (exchange_cards[username]) return <p>Waiting for other returns...</p>;
 
-    if (myReturn && !alreadyReturned) {
-      return (
-        <div className="tribute-modal">
-          <h3>You must return a card to {myReturn.from}</h3>
-          <p>Select any card (not the one just received from tribute)</p>
-          <div>
-            {myHand.map(card => (
+          return (
+            <>
+              <h2>Return a card to {myReturn.from}</h2>
+              <p>You may return any card (except the tribute card you received)</p>
+              <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center" }}>
+                {myHand.map(card =>
+                  renderCardButton(card, () => setSelectedCard(card), selectedCard === card)
+                )}
+              </div>
               <button
-                key={card}
-                style={{
-                  margin: 2,
-                  background: selectedCard === card ? "#005fff" : "#f6f6f6",
-                  color: selectedCard === card ? "#fff" : "#222"
+                onClick={() => {
+                  socket.emit("return_tribute", {
+                    roomId,
+                    from: username,
+                    to: myReturn.from,
+                    card: selectedCard
+                  });
+                  setSelectedCard(null);
                 }}
-                onClick={() => setSelectedCard(card)}
+                disabled={!selectedCard}
+                style={{
+                  marginTop: 12,
+                  padding: "10px 20px",
+                  fontWeight: 600,
+                  background: "#005fff",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 8
+                }}
               >
-                {card}
+                Return Card
               </button>
-            ))}
-          </div>
-          <button
-            disabled={!selectedCard}
-            onClick={() => {
-              if (!roomId) {
-                console.warn("[TRIBUTE RETURN] Missing roomId — cannot emit!");
-                return;
-              }
+            </>
+          );
+        })()}
 
-              console.log(
-                `[TRIBUTE RETURN] ${username} returning card ${selectedCard} to ${myReturn.from} in room ${roomId}`
-              );
-              socket.emit("return_tribute", {
-                roomId,
-                from: username,
-                to: myReturn.from,
-                card: selectedCard
-              });
-              setSelectedCard(null);
-            }}
-            style={{
-              marginTop: 12,
-              padding: "8px 18px",
-              borderRadius: 5,
-              fontWeight: 600
-            }}
-          >
-            Return Card
-          </button>
-        </div>
-      );
-    } else {
-      return (
-        <div className="tribute-modal">Waiting for all tribute returns...</div>
-      );
-    }
-  }
-  // ✅ Add final fallback return
-  return null;
+        {/* === Tribute TIE CHOICE === */}
+        {step === "choose" && username === chooser && (
+          <>
+            <h2>Tribute Card Tie</h2>
+            <p>Choose which tribute card you want to keep</p>
+            <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 16 }}>
+              {tie_cards.map(({ card }) =>
+                renderCardButton(card, () => setSelectedCard(card), selectedCard === card)
+              )}
+            </div>
+            <button
+              onClick={() => {
+                socket.emit("tribute_choice_selected", {
+                  roomId,
+                  chosenCard: selectedCard
+                });
+                setSelectedCard(null);
+              }}
+              disabled={!selectedCard}
+              style={{
+                marginTop: 14,
+                padding: "10px 24px",
+                fontWeight: 600,
+                background: "#005fff",
+                color: "#fff",
+                border: "none",
+                borderRadius: 8
+              }}
+            >
+              Confirm Choice
+            </button>
+          </>
+        )}
+
+        {/* === Non-chooser view of choice step === */}
+        {step === "choose" && username !== chooser && (
+          <>
+            <h2>Waiting for {chooser} to choose a tribute card...</h2>
+            <div style={{ display: "flex", justifyContent: "center", gap: 12, marginTop: 12 }}>
+              {tie_cards.map(({ card }) => (
+                <img
+                  key={card}
+                  src={process.env.PUBLIC_URL + `/cards/${card}.svg`}
+                  alt={card}
+                  style={{
+                    width: 60,
+                    height: 84,
+                    borderRadius: 6,
+                    border: "1.5px solid #aaa",
+                    background: "#fff"
+                  }}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
