@@ -7,8 +7,17 @@ from .words import WORDS  # If you use word-based room IDs
 rooms = {}
 
 def generate_room_id():
-    return 'test'  # For testing
+    # Try to find a unique ID with no repeated words
+    for _ in range(10):
+        parts = random.sample(WORDS, 3)  # ensures all 3 words are unique
+        room_id = '-'.join(parts).lower()
+        if room_id not in rooms:
+            return room_id
 
+    # Fallback: random string if uniqueness fails
+    return ''.join(random.choices(string.ascii_lowercase, k=8))
+    #return 'test'  # For testing
+    
 def initial_slots():
     return [None, None, None, None]
 

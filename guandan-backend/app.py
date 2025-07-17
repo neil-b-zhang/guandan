@@ -566,7 +566,7 @@ def start_new_game_round(room_id):
     shuffle_deck(deck)
     hands = []
     for _ in range(len(players)):
-        hand = [deck.pop() for _ in range(1)]
+        hand = [deck.pop() for _ in range(28)]
         hands.append(hand)
     for player, hand in zip(players, hands):
         set_player_hand(room_id, player, hand)
