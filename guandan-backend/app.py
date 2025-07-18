@@ -2,6 +2,7 @@ from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit, join_room as sio_join_room
 import threading
 import time
+from flask_cors import CORS
 
 from game.rooms import (
     create_room,
@@ -293,6 +294,7 @@ def determine_starting_player(room):
 
 
 app = Flask(__name__)
+CORS(app, supports_credentials=True)
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
