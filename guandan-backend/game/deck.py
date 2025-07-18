@@ -7,7 +7,7 @@ JOKERS = ['JoR', 'JoB']  # Red Joker, Black Joker
 
 def create_deck():
     single_deck = [rank + suit for suit in SUITS for rank in RANKS]
-    single_deck += JOKERS * 2  # 2 red jokers, 2 black jokers
+    single_deck += JOKERS  # 1 red joker and 1 black joker per deck
     return single_deck * 2  # Two full decks
 
 def shuffle_deck(deck):
