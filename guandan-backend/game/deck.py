@@ -6,9 +6,9 @@ RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 JOKERS = ['JoR', 'JoB']  # Red Joker, Black Joker
 
 def create_deck():
-    deck = [rank + suit for suit in SUITS for rank in RANKS]
-    deck += JOKERS * 2  # 2 red jokers and 2 black jokers total
-    return deck
+    single_deck = [rank + suit for suit in SUITS for rank in RANKS]
+    single_deck += JOKERS * 2  # 2 red jokers, 2 black jokers
+    return single_deck * 2  # Two full decks
 
 def shuffle_deck(deck):
     random.shuffle(deck)
