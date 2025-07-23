@@ -1,7 +1,12 @@
+import eventlet
+eventlet.monkey_patch()
+
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit, join_room as sio_join_room
 import threading
 import time
+from flask_cors import CORS
+from game.deck import create_deck, shuffle_deck, deal_cards
 
 from game.rooms import (
     create_room,
@@ -293,6 +298,7 @@ def determine_starting_player(room):
 
 
 app = Flask(__name__)
+CORS(app, supports_credentials=True)
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
@@ -565,9 +571,8 @@ def start_new_game_round(room_id):
     deck = create_deck()
     shuffle_deck(deck)
     hands = []
-    for _ in range(len(players)):
-        hand = [deck.pop() for _ in range(27)]
-        hands.append(hand)
+    hands = deal_cards(deck, num_players=len(players))
+    
     for player, hand in zip(players, hands):
         set_player_hand(room_id, player, hand)
 

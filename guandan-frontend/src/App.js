@@ -179,7 +179,10 @@ export default function App() {
 
   // ---- SOCKET CONNECTION + EVENT HANDLERS ----
   useEffect(() => {
-    const s = io("http://localhost:5000", { transports: ["websocket", "polling"] });
+    const s = io(process.env.REACT_APP_BACKEND_URL, {
+      transports: ["websocket", "polling"]
+    });
+
     setSocket(s);
 
     s.on("connect", () => setConnected(true));

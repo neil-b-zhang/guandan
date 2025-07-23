@@ -2,3 +2,5 @@ flask
 flask-socketio
 eventlet  # Required for Flask-SocketIO async
 pytest
+gunicorn
+flask-cors
