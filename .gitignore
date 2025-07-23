@@ -56,3 +56,28 @@ junit*.xml
 
 # ---- Local Settings ----
 *.local
+
+# ---- Python Testing ----
+*.pytest_cache/
+guandan-backend/.pytest_cache/
+guandan-backend/.coverage
+guandan-backend/htmlcov/
+guandan-backend/coverage.xml
+guandan-backend/.hypothesis/
+guandan-backend/tests/__pycache__/
+guandan-backend/tests/*.pyc
+guandan-backend/tests/*.pyo
+guandan-backend/tests/tmp*/
+
+# ---- Test Logs & Results ----
+guandan-backend/tests/*.log
+guandan-backend/tests/*.out
+guandan-backend/tests/*.result
+guandan-backend/tests/.coverage*
+
+# ---- Pytest output capture ----
+.cache/
+*.log
+*.tmp
+*.out
+*.err
