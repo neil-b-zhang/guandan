@@ -691,11 +691,18 @@ def handle_play_cards(data):
         emit('error_msg', "Invalid hand type!", room=request.sid)
         return
 
-    if game['current_play'] and game['current_play']['cards']:
-        if not beats(game['current_play'], {'player': username, 'cards': cards},
-                     game['levelRank'], game['trumpSuit'], game['wildCards']):
+    prev_play = game['current_play']
+    if prev_play and prev_play['cards']:
+        prev_type = hand_type(prev_play['cards'], game['levelRank'], game['trumpSuit'], game['wildCards'])
+
+        if this_type[0].endswith("bomb") and (not prev_type or not prev_type[0].endswith("bomb")):
+            # ✅ Allow bomb to beat any non-bomb
+            pass
+        elif not beats(prev_play, {'player': username, 'cards': cards},
+                       game['levelRank'], game['trumpSuit'], game['wildCards']):
             emit('error_msg', "Your play must beat the previous hand.", room=request.sid)
             return
+
 
     # --- Build a list of indexes to remove ---
     hand_indexes_to_remove = []
